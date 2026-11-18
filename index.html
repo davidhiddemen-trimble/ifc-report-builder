@@ -141,7 +141,8 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
       <button type="button" id="uMet" aria-pressed="false">Metric</button>
     </div>
   </div>
-  <div id="banner"></div>
+  <div id="fitnote" class="note" hidden></div>
+<div id="banner"></div>
 
   <div class="shell">
     <aside class="builder" id="builder" aria-label="Report settings"></aside>
@@ -644,7 +645,7 @@ function matches(row, flt) {
   switch (flt.op) {
     case 'in': return flt.values.indexOf(has ? String(v) : '(blank)') > -1;
     case 'notin': return flt.values.indexOf(has ? String(v) : '(blank)') === -1;
-    case 'contains': return has && String(v).toLowerCase().indexOf(String(flt.text || '').toLowerCase()) > -1;
+    case 'contains': { if (!has) return false; var sv = String(v).toLowerCase(), words = String(flt.text || '').split(/[,;]/).map(function (w) { return w.trim().toLowerCase(); }).filter(Boolean); if (!words.length) return true; for (var wi = 0; wi < words.length; wi++) if (sv.indexOf(words[wi]) > -1) return true; return false; }
     case 'filled': return has;
     case 'empty': return !has;
     case 'gt': return has && typeof v === 'number' && v > flt.num;
@@ -681,7 +682,25 @@ function runReport(model, spec, system) {
     var out = rows.map(function (r) {
       return { type: 'row', raw: cols.map(function (c) { return r.v[c.key]; }), cells: cols.map(function (c) { var v = r.v[c.key]; return v === undefined ? '' : fmtValue(v, c.kind, 'auto', system); }) };
     });
-    if (spec.sortBy) { var si = cols.findIndex(function (c) { return c.key === spec.sortBy; }); if (si > -1) out.sort(function (a, b) { return cmp(a.raw[si], b.raw[si]) * (spec.sortDir === 'desc' ? -1 : 1); }); }
+    var si = spec.sortBy ? cols.findIndex(function (c) { return c.key === spec.sortBy; }) : -1;
+    var bi = spec.listBreak ? cols.findIndex(function (c) { return c.key === spec.listBreak; }) : -1;
+    if (si > -1 || bi > -1) out.sort(function (a, b) { var d = 0; if (bi > -1) d = cmp(a.raw[bi], b.raw[bi]); if (!d && si > -1) d = cmp(a.raw[si], b.raw[si]) * (spec.sortDir === 'desc' ? -1 : 1); return d; });
+    var sumCols = cols.map(function (c, i) { return c.numeric && c.kind ? i : -1; }).filter(function (i) { return i > -1; });
+    var labelCol = cols.findIndex(function (c) { return !(c.numeric && c.kind); });
+    function sumRow(group, type, label) {
+      var raw = cols.map(function () { return ''; }), cells = cols.map(function () { return ''; });
+      sumCols.forEach(function (i) { var t = 0; group.forEach(function (r) { if (typeof r.raw[i] === 'number') t += r.raw[i]; }); raw[i] = t; cells[i] = fmtValue(t, cols[i].kind, 'auto', system); });
+      var lc = labelCol > -1 ? labelCol : 0; raw[lc] = label; cells[lc] = label;
+      return { type: type, raw: raw, cells: cells };
+    }
+    if (sumCols.length && (bi > -1 || spec.listTotal !== false)) {
+      var withSums = [], cur = [], curKey = null;
+      var flush = function () { if (bi > -1 && cur.length > 1) withSums.push(sumRow(cur, 'subtotal', 'Subtotal: ' + (curKey === undefined || curKey === null || curKey === '' ? '(blank)' : fmtValue(curKey, cols[bi].kind, 'auto', system)) + ' (' + cur.length + ' items)')); cur = []; };
+      out.forEach(function (r) { if (bi > -1) { var k = r.raw[bi]; if (cur.length && String(k) !== String(curKey)) flush(); curKey = k; cur.push(r); } withSums.push(r); });
+      if (bi > -1) flush();
+      if (spec.listTotal !== false) withSums.push(sumRow(out, 'total', 'Total (' + out.length + ' items)'));
+      out = withSums;
+    }
     return { columns: cols, rows: out, itemCount: rows.length, list: true };
   }
   var gb = (spec.groupBy || []).filter(Boolean);
@@ -835,7 +854,21 @@ var PRESETS = [
     measures: [{ field: '__items', agg: 'items' }, { field: L, agg: 'sum' }, { field: W, agg: 'sum' }] } }
 ];
 function blankSpec() { return { blankEmpty: false, labels: {}, title: 'Untitled report', mode: 'grouped', filters: [], groupBy: [], measures: [{ field: '__items', agg: 'items' }], columns: [], subtotals: true, grandTotal: true, sortMeasure: '', sortDir: 'desc', sortBy: '' }; }
-function fitSpec(sp) { if (model && sp.groupBy) { var g = sp.groupBy.filter(function (k) { return model.fieldMap.has(k); }); if (g.length !== sp.groupBy.length) sp.groupBy = g; } return sp; }
+function fitSpec(sp) {
+  var notes = [];
+  if (model && sp.filters) {
+    sp.filters = sp.filters.filter(function (f) {
+      if (!f.field) return true;
+      var nm = E.shortName(f.field);
+      if (!model.fieldMap.has(f.field)) { notes.push('"' + nm + '" (this model has no such field)'); return false; }
+      if (E.filterRows(model, { filters: [f] }).length === 0) { notes.push('"' + nm + (f.op === 'contains' ? ' contains ' + (f.text || '') : f.op === 'in' ? ' is ' + (f.values || []).join('/') : '') + '" (nothing matches)'); return false; }
+      return true;
+    });
+  }
+  var fn = document.getElementById('fitnote'); if (fn) { fn.hidden = !notes.length; fn.textContent = notes.length ? 'This template was adjusted for your model. Removed filter' + (notes.length > 1 ? 's' : '') + ': ' + notes.join('; ') + '.' : ''; }
+  return fitSpec2(sp);
+}
+function fitSpec2(sp) { if (model && sp.groupBy) { var g = sp.groupBy.filter(function (k) { return model.fieldMap.has(k); }); if (g.length !== sp.groupBy.length) sp.groupBy = g; } return sp; }
 function fullSpec(s) { var b = blankSpec(); var c = clone(s); Object.keys(c).forEach(function (k) { b[k] = c[k]; }); return b; }
 
 /* ---------- Saved templates (this browser only) ---------- */
@@ -914,7 +947,7 @@ function renderBuilder() {
     h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row"><select data-act="f-field" data-i="' + i + '" aria-label="Filter field">' + fieldOptions(f.field) + '</select><button class="x" type="button" data-act="f-del" data-i="' + i + '" aria-label="Remove filter">✕</button></div>';
     if (bad) h += '<div class="warnline">Not in this model</div>';
     h += '<select data-act="f-op" data-i="' + i + '" aria-label="Condition">' + ops.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === f.op ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
-    if (f.op === 'contains') h += '<input type="text" data-act="f-text" data-i="' + i + '" value="' + esc(f.text || '') + '" placeholder="Text to look for" aria-label="Text">';
+    if (f.op === 'contains') h += '<input type="text" data-act="f-text" data-i="' + i + '" value="' + esc(f.text || '') + '" placeholder="Text to look for, or several separated by commas (A36, A992)" aria-label="Text">';
     else if (f.op === 'gt' || f.op === 'lt') {
       var shown = f.num === undefined || f.num === null ? '' : +(f.num * dispFactor(fd && fd.kind)).toFixed(4);
       h += '<div class="row"><input type="number" step="any" data-act="f-num" data-i="' + i + '" value="' + shown + '" aria-label="Number">' + (fd && fd.kind ? '<span class="muted">' + esc(unitLabelFor(fd.kind, 'auto')) + '</span>' : '') + '</div>';
@@ -969,7 +1002,9 @@ function renderBuilder() {
         '<button class="x" type="button" data-act="c-up" data-i="' + i + '" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>↑</button><button class="x" type="button" data-act="c-down" data-i="' + i + '" aria-label="Move down"' + (i === spec.columns.length - 1 ? ' disabled' : '') + '>↓</button><button class="x" type="button" data-act="c-del" data-i="' + i + '" aria-label="Remove column">✕</button></div>' + (bad ? '<div class="warnline">Not in this model</div>' : '') + '</div>';
     });
     h += '<button class="btn small" type="button" data-act="c-add">+ Add column</button></div>';
-    h += '<div class="sec"><h3>Sort</h3><div class="row"><select data-act="lsort" aria-label="Sort by"><option value="">Model order</option>' + spec.columns.filter(Boolean).map(function (c) { return '<option value="' + esc(c) + '"' + (spec.sortBy === c ? ' selected' : '') + '>' + esc(E.shortName(c)) + '</option>'; }).join('') + '</select><select data-act="ldir" aria-label="Direction" style="max-width:110px"><option value="asc"' + (spec.sortDir !== 'desc' ? ' selected' : '') + '>A to Z</option><option value="desc"' + (spec.sortDir === 'desc' ? ' selected' : '') + '>Z to A</option></select></div></div>';
+    h += '<div class="sec"><h3>Sort</h3><div class="row"><select data-act="lsort" aria-label="Sort by"><option value="">Model order</option>' + spec.columns.filter(Boolean).map(function (c) { return '<option value="' + esc(c) + '"' + (spec.sortBy === c ? ' selected' : '') + '>' + esc(E.shortName(c)) + '</option>'; }).join('') + '</select><select data-act="ldir" aria-label="Direction" style="max-width:110px"><option value="asc"' + (spec.sortDir !== 'desc' ? ' selected' : '') + '>A to Z</option><option value="desc"' + (spec.sortDir === 'desc' ? ' selected' : '') + '>Z to A</option></select></div>' +
+      '<div class="row"><span class="muted">Sections</span><select data-act="lbreak" aria-label="Break into sections by"><option value="">No sections</option>' + spec.columns.filter(Boolean).map(function (c) { return '<option value="' + esc(c) + '"' + (spec.listBreak === c ? ' selected' : '') + '>Subtotal by ' + esc(E.shortName(c)) + '</option>'; }).join('') + '</select></div>' +
+      '<label class="chk"><input type="checkbox" data-act="ltotal"' + (spec.listTotal !== false ? ' checked' : '') + '> Total row for lengths, weights and other measured columns</label></div>';
   }
   builderEl.innerHTML = h;
 }
@@ -1116,6 +1151,8 @@ builderEl.addEventListener('change', function (e) {
     case 'opt-blank': spec.blankEmpty = t.checked; break;
     case 'sort': if (!t.value) { spec.sortMeasure = ''; } else { var p = t.value.split(':'); spec.sortMeasure = +p[0]; spec.sortDir = p[1]; } break;
     case 'lsort': spec.sortBy = t.value; break;
+    case 'lbreak': spec.listBreak = t.value; break;
+    case 'ltotal': spec.listTotal = t.checked; break;
     case 'ldir': spec.sortDir = t.value; break;
     default: return;
   }
