@@ -1,0 +1,10 @@
+{
+  "url": "https://YOUR-NAME.github.io/ifc-report-builder/index.html",
+  "title": "Report Builder",
+  "icon": "https://YOUR-NAME.github.io/ifc-report-builder/icon.png",
+  "description": "Custom quantity reports from the model open in the 3D viewer. Export CSV, text or PDF.",
+  "extensionType": [
+    "3dviewer"
+  ],
+  "enabled": true
+}

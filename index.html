@@ -1,4 +1,4 @@
-<title>IFC Report Builder</title>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>*,*::before,*::after{box-sizing:border-box}body{margin:0}</style></head><body><title>IFC Report Builder</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -133,7 +133,8 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
     <div class="brand">IFC Report Builder <small>Reads Tekla Structures IFC files in your browser. Nothing is uploaded.</small></div>
     <div class="filechip" id="connectChip" hidden></div>
     <div class="filechip" id="chip" hidden><b id="chipName"></b><span id="chipInfo"></span></div>
-    <button class="btn primary" id="openBtn" type="button">Open IFC file</button>
+    <button class="btn primary" id="viewerBtn" type="button" hidden>Read model from viewer</button>
+    <button class="btn" id="openBtn" type="button">Open IFC file</button>
     <input type="file" id="fileIn" accept=".ifc,.IFC" hidden>
     <div class="seg" role="group" aria-label="Units">
       <button type="button" id="uImp" aria-pressed="true">Imperial</button>
@@ -505,6 +506,87 @@ function loadIfc(text, fileName) {
     rows: rows, fields: fieldList, fieldMap: new Map(fieldList.map(function (f) { return [f.key, f]; })), unitFactors: uf, entityCount: ents.size, duplicates: dupCount };
 }
 
+/* ---------- Trimble Connect viewer objects -> same model shape as loadIfc ---------- */
+function loadViewer(objs, label, modelNames) {
+  var KIND = { 0: 'length', 1: 'area', 2: 'volume', 3: 'mass', 4: 'angle' };
+  var SCALE = { length: 0.001, area: 1, volume: 1, mass: 1, angle: 1 }; // viewer lengths are mm; SI base here is metres
+  var rows = [], fields = new Map(), nextId = 1;
+  function addField(key, kind, isText) {
+    var f = fields.get(key);
+    if (!f) { f = { key: key, kind: kind || null, numeric: !isText, filled: 0, distinct: new Set(), sample: null, min: Infinity, max: -Infinity, sum: 0 }; fields.set(key, f); }
+    return f;
+  }
+  function setVal(row, key, c) {
+    if (!c) return;
+    row.v[key] = c.val;
+    var f = addField(key, c.kind, !!c.text);
+    if (c.text && f.numeric) f.numeric = false;
+    if (!c.text && !f.kind && c.kind) f.kind = c.kind;
+    f.filled++;
+    if (f.distinct.size <= 300) f.distinct.add(c.val);
+    if (f.sample === null) f.sample = c.val;
+    if (typeof c.val === 'number') { if (c.val < f.min) f.min = c.val; if (c.val > f.max) f.max = c.val; f.sum += c.val; }
+  }
+  function conv(p) {
+    var v = p.value; if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'boolean') return { val: v ? 'Yes' : 'No', text: true };
+    if (typeof v === 'string') return { val: v, text: true };
+    if (typeof v !== 'number') return null;
+    if (/\?$/.test(p.name) && (v === 0 || v === 1)) return { val: v ? 'Yes' : 'No', text: true };
+    var k = KIND[p.type];
+    if (k) return { val: v * SCALE[k], kind: k };
+    return { val: v, kind: null };
+  }
+  var RB = 'Tekla Reinforcement - Bending List › ';
+  (objs || []).forEach(function (o) {
+    var cls = String(o.class || 'UNKNOWN').toUpperCase();
+    if (SKIP.test(cls)) return;
+    var row = { id: nextId++, v: {}, cls: cls, tag: null, parent: null };
+    setVal(row, 'IFC class', { val: prettyClass(cls), text: true });
+    if (o.product && o.product.name) setVal(row, 'Name', { val: o.product.name, text: true });
+    var tmp = {};
+    (o.properties || []).forEach(function (ps) {
+      (ps.properties || []).forEach(function (p) { var c = conv(p); if (c) tmp[(ps.name || '(unnamed set)') + ' › ' + p.name] = c; });
+    });
+    if (tmp[RB + 'Weight total in group'] && !tmp[RB + 'Weight total in group'].kind) tmp[RB + 'Weight total in group'].kind = 'mass';
+    Object.keys(tmp).forEach(function (k) { setVal(row, k, tmp[k]); });
+    var pp = function (n) { return tmp['Part Properties › ' + n]; };
+    if (!row.v['Name']) { var nm = pp('Name') || tmp['Tekla Reinforcement - General › Name']; if (nm) setVal(row, 'Name', nm); }
+    if (pp('Profile')) setVal(row, 'Description', pp('Profile'));
+    if (pp('Material')) setVal(row, 'Material', pp('Material'));
+    if (pp('Part Mark')) { setVal(row, 'Tag', pp('Part Mark')); row.tag = pp('Part Mark').val; }
+    if (modelNames && o.modelId && modelNames[o.modelId]) setVal(row, 'Model', { val: modelNames[o.modelId], text: true });
+    /* rebar: one object per bar group */
+    if (cls === 'IFCREINFORCINGBAR') {
+      var nb = tmp[RB + 'Number of bars in group'] && tmp[RB + 'Number of bars in group'].val;
+      if (nb) {
+        if (tmp[RB + 'Length'] && tmp[RB + 'Length'].kind === 'length') setVal(row, 'Rebar totals › Total length (all bars in group)', { val: tmp[RB + 'Length'].val * nb, kind: 'length' });
+        var wt = tmp[RB + 'Weight total in group'] || (tmp[RB + 'Weight'] && tmp[RB + 'Weight'].kind === 'mass' ? { val: tmp[RB + 'Weight'].val * nb, kind: 'mass' } : null);
+        if (wt) setVal(row, 'Rebar totals › Total weight (all bars in group)', wt);
+      }
+      var cu = tmp['Tekla Reinforcement - General › Cast unit mark'];
+      setVal(row, 'Assembly mark', { val: cu ? cu.val : '(no cast unit)', text: true });
+    } else if (cls === 'IFCELEMENTASSEMBLY') {
+      var am = tmp['Tekla Assembly › Assembly/Cast unit Mark']; if (am) setVal(row, 'Assembly mark', am);
+    } else if (pp('Assembly Mark')) {
+      setVal(row, 'Assembly mark', pp('Assembly Mark'));
+    }
+    var im = row.v['Part Properties › Is Main Part?'];
+    if (im !== undefined) setVal(row, 'Part role', { val: (im === 'Yes' || im === 1 || im === true) ? 'Primary (main part)' : 'Secondary', text: true });
+    if (cls === 'IFCMECHANICALFASTENER' && row.v['Tekla Bolt › Bolt count'] !== undefined) {
+      var hw = (row.v['Tekla Bolt › Nut count'] || 0) + (row.v['Tekla Bolt › Washer count'] || 0);
+      setVal(row, 'Bolt use', { val: hw > 0 ? 'Bolt with nut or washer' : 'Hole only (no nut or washer)', text: true });
+    }
+    rows.push(row);
+  });
+  var fieldList = Array.from(fields.values()).map(function (f) {
+    return { key: f.key, kind: f.kind, numeric: f.numeric, filled: f.filled, distinct: f.distinct.size, distinctCapped: f.distinct.size > 300, sample: f.sample, min: f.min, max: f.max, sum: f.sum,
+      group: f.key.indexOf(' › ') > -1 ? f.key.split(' › ')[0] : 'General' };
+  });
+  return { fileName: label || 'Model in Trimble Connect', project: '', schema: 'Trimble Connect viewer', exporter: 'Tekla (viewer)', rows: rows, fields: fieldList,
+    fieldMap: new Map(fieldList.map(function (f) { return [f.key, f]; })), unitFactors: {}, entityCount: rows.length, duplicates: 0 };
+}
+
 /* ---------- Formatting ---------- */
 function toUnit(si, kind, unit) { return si * UNITS[kind][unit]; }
 function fmtFtIn(m) {
@@ -662,7 +744,7 @@ function cmp(a, b, la, lb) {
   return String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' });
 }
 
-var api = { loadIfc: loadIfc, runReport: runReport, filterRows: filterRows, fmtValue: fmtValue, numValue: numValue, unitName: unitName, resolveUnit: resolveUnit,
+var api = { loadIfc: loadIfc, loadViewer: loadViewer, runReport: runReport, filterRows: filterRows, fmtValue: fmtValue, numValue: numValue, unitName: unitName, resolveUnit: resolveUnit,
   UNITS: UNITS, UNIT_LABEL: UNIT_LABEL, ITEMS: ITEMS, shortName: shortName, aggName: aggName, parseArgs: parseArgs, scan: scan, fmtFtIn: fmtFtIn, groupLabel: groupLabel };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.IfcEngine = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -748,6 +830,7 @@ var PRESETS = [
     measures: [{ field: '__items', agg: 'items' }, { field: L, agg: 'sum' }, { field: W, agg: 'sum' }] } }
 ];
 function blankSpec() { return { blankEmpty: false, labels: {}, title: 'Untitled report', mode: 'grouped', filters: [], groupBy: [], measures: [{ field: '__items', agg: 'items' }], columns: [], subtotals: true, grandTotal: true, sortMeasure: '', sortDir: 'desc', sortBy: '' }; }
+function fitSpec(sp) { if (model && sp.groupBy) { var g = sp.groupBy.filter(function (k) { return model.fieldMap.has(k); }); if (g.length !== sp.groupBy.length) sp.groupBy = g; } return sp; }
 function fullSpec(s) { var b = blankSpec(); var c = clone(s); Object.keys(c).forEach(function (k) { b[k] = c[k]; }); return b; }
 
 /* ---------- Saved templates (this browser only) ---------- */
@@ -982,7 +1065,7 @@ function setPreset(val) {
   var s;
   if (/^s:/.test(val)) { var t = saved[+val.slice(2)]; if (!t) return; s = t.spec; }
   else { var id = val.replace(/^b:/, ''); var p = PRESETS.filter(function (x) { return x.id === id; })[0]; if (!p) return; s = p.spec; }
-  spec = fullSpec(s); presetId = val; refresh();
+  spec = fitSpec(fullSpec(s)); presetId = val; refresh();
 }
 function setStatus(msg, err) { var el = $('#status'); el.textContent = msg || ''; el.className = 'status' + (err ? ' err' : ''); if (msg) { clearTimeout(setStatus.t); setStatus.t = setTimeout(function () { el.textContent = ''; }, 6000); } }
 
@@ -1100,7 +1183,7 @@ function defaultPreset(m, kind) {
   if (kind === 'steel') return 'steel-material';
   if (kind === 'concrete') return 'rebar-qto';
   var rebar = m.rows.filter(function (r) { return r.cls === 'IFCREINFORCINGBAR'; }).length;
-  if (rebar > 0) return 'rebar-qto';
+  if (rebar > 0) return m.fieldMap.has('Tekla Reinforcement - Bending List \u203A Group position number') ? 'rebar-qto' : 'rebar-cu';
   if (m.rows.some(function (r) { return /STEEL/i.test(r.v['Material'] || ''); })) return 'steel-material';
   return 'by-class';
 }
@@ -1113,7 +1196,7 @@ function adopt(m, sample) {
   if (m.duplicates) h += '<div class="banner warn"><b>' + m.duplicates.toLocaleString() + ' duplicate objects were ignored.</b> The same object (same GlobalId) appears more than once in this file, which would double count it. Only the first copy is used. If your Tekla totals look different, check the IFC export settings.</div>';
   $('#banner').innerHTML = h;
   var keep = spec && presetId === 'custom';
-  if (!keep) { var pid = defaultPreset(m, sample); var pr = PRESETS.filter(function (x) { return x.id === pid; })[0]; spec = fullSpec(pr.spec); presetId = 'b:' + pid; }
+  if (!keep) { var pid = defaultPreset(m, sample); var pr = PRESETS.filter(function (x) { return x.id === pid; })[0]; spec = fitSpec(fullSpec(pr.spec)); presetId = 'b:' + pid; }
   refresh();
 }
 $('#banner').addEventListener('click', function (e) { var b = e.target.closest('[data-sample]'); if (!b) return; presetId = 'b:x'; spec = null; loadSample(b.dataset.sample); });
@@ -1256,6 +1339,31 @@ function initDownloads() {
 spec = fullSpec(PRESETS[0].spec); presetId = 'b:' + PRESETS[0].id;
 initDownloads();
 /* ---------- Trimble Connect link (only when embedded as an extension) ---------- */
+function loadFromViewer() {
+  var api = window.tcApi; if (!api || !api.viewer) return;
+  showLoading(true, 'Reading the model from Trimble Connect\u2026');
+  var names = {};
+  var pm = api.viewer.getModels ? api.viewer.getModels().then(function (ms) { (ms || []).forEach(function (m) { names[m.id] = m.name; }); }, function () { }) : Promise.resolve();
+  pm.then(function () { return api.viewer.getObjects({ output: { loadProperties: true } }); }).then(function (res) {
+    var objs = []; (res || []).forEach(function (m) { (m.objects || []).forEach(function (o) { o.modelId = m.modelId; objs.push(o); }); });
+    if (!objs.length) throw new Error('No model is loaded in the 3D viewer. Turn a model on in the viewer, then press the button again.');
+    if (!(objs[0].properties && objs[0].properties.length)) {
+      var p = Promise.resolve([]);
+      (res || []).forEach(function (m) { var ids = (m.objects || []).map(function (x) { return x.id; });
+        for (var i = 0; i < ids.length; i += 500) (function (sl, mid) { p = p.then(function (acc) { return api.viewer.getObjectProperties(mid, sl).then(function (r) { r.forEach(function (x) { x.modelId = mid; }); return acc.concat(r); }); }); })(ids.slice(i, i + 500), m.modelId); });
+      return p;
+    }
+    return objs;
+  }).then(function (objs) {
+    var ids = Object.keys(names), label = ids.length === 1 ? names[ids[0]] : (ids.length ? ids.length + ' models in viewer' : 'Model in Trimble Connect');
+    var m = E.loadViewer(objs, label, names);
+    if (!m.rows.length) throw new Error('The viewer returned no usable objects.');
+    adopt(m, false);
+    if (m.rows.some(function (r) { return r.cls === 'IFCBUILDINGELEMENTPROXY' && r.v['Pours \u203A Pour Volume'] !== undefined; }))
+      $('#banner').innerHTML += '<div class="banner"><b>Concrete is listed by pour.</b> This model was uploaded with pours, not cast units, so concrete volumes follow the pours. Rebar is still grouped by cast unit.</div>';
+    setStatus('Read ' + m.rows.length.toLocaleString() + ' objects from the viewer.');
+  }).catch(function (e) { setStatus('Could not read the viewer: ' + (e && e.message || e), true); }).then(function () { showLoading(false); });
+}
 function initConnect() {
   var inFrame = false; try { inFrame = window.parent !== window; } catch (e) { inFrame = true; }
   if (!inFrame || window.claude) return;
@@ -1265,6 +1373,7 @@ function initConnect() {
     if (!window.TrimbleConnectWorkspace) return;
     window.TrimbleConnectWorkspace.connect(window.parent, function (ev, data) { }, 15000).then(function (api) {
       window.tcApi = api;
+      if (api.viewer && api.viewer.getObjects) { $('#viewerBtn').hidden = false; $('#viewerBtn').onclick = loadFromViewer; setTimeout(loadFromViewer, 300); }
       return api.project.getProject().then(function (p) {
         window.tcProject = p; var c = $('#connectChip'); if (c) { c.textContent = 'Trimble Connect: ' + (p.name || p.id); c.hidden = false; }
       }).then(function () { try { api.extension.setStatusMessage('Report Builder ready'); } catch (e) { } });
@@ -1276,3 +1385,4 @@ initConnect();
 loadSample();
 })();
 </script>
+</body></html>

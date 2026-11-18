@@ -1,4 +1,5 @@
-Report Builder - Trimble Connect extension (prototype)
-1. Put these 3 files (index.html, icon.png, manifest.json) in a public GitHub repo and turn on GitHub Pages.
-2. Edit manifest.json: replace YOUR-NAME and the repo name with yours.
-3. In Trimble Connect (project admin): Settings > Apps & Capabilities > + Add Custom > paste the manifest.json URL.
+Report Builder - Trimble Connect extension
+Files: index.html (the tool), icon.png, viewer-manifest.json (use this one), manifest.json (older project-page version),
+probe.html + probe-manifest.json (test page).
+Update: upload index.html and viewer-manifest.json to your GitHub repository (Add file > Upload files), after replacing YOUR-NAME in the manifest with your GitHub username.
+Add in Trimble Connect: 3D viewer extension settings > add custom > paste the viewer-manifest.json address.
