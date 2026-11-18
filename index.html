@@ -127,6 +127,8 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
 #tplbar label { font-size: 12.5px; color: var(--muted); }
 #tplbar select { flex: 1 1 240px; width: auto; max-width: 420px; }
 #tplbar .tphint { flex: 1 1 100%; font-size: 12px; color: var(--muted); }
+.fwrap { flex: 1 1 auto; min-width: 0; }
+.fcap { font-size: 11px; color: var(--muted); margin: 2px 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #fpop { position: fixed; z-index: 60; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.2); overflow: auto; font-size: 13px; }
 #fpop .fo { padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line-soft); }
 #fpop .fo.on, #fpop .fo:hover { background: var(--accent-soft); }
@@ -936,16 +938,19 @@ fpop.addEventListener('mousedown', function (e) { var n = e.target.closest('.fo'
 window.addEventListener('resize', function () { if (!fpop.hidden && fp.input) fpPlace(); });
 document.addEventListener('scroll', function (e) { if (!fpop.hidden && fp.input && e.target !== fpop && !fpop.contains(e.target)) fpPlace(); }, true);
 function fieldPicker(act, i, selected) {
-  var shown = selected === E.ITEMS ? 'Number of items' : (selected || '');
-  return '<input type="text" class="fpick" data-fp="1" data-act="' + act + '" data-i="' + i + '" value="' + esc(shown) + '" placeholder="Type to search fields\u2026" autocomplete="off" spellcheck="false" onfocus="this.select()" aria-label="Field (type to search)">';
+  var isItems = selected === E.ITEMS, key = selected || '';
+  var lab0 = (!isItems && key && spec.labels && spec.labels[key]) || '';
+  var shown = isItems ? 'Number of items' : (lab0 || (key ? E.shortName(key) : ''));
+  var cap = '';
+  if (key && !isItems) {
+    var gi = key.indexOf(SEP), grp = gi > -1 ? key.slice(0, gi) : 'General', lab = spec.labels && spec.labels[key];
+    cap = '<div class="fcap" title="' + esc(key) + '">' + (lab ? 'field ' + esc(E.shortName(key)) + ' \u00b7 ' : '') + esc(grp) + (fld(key) ? '' : ' \u00b7 not in this model') + '</div>';
+  }
+  return '<div class="fwrap"><input type="text" class="fpick" data-fp="1" data-key="' + esc(key) + '" data-act="' + act + '" data-i="' + i + '" value="' + esc(shown) + '" title="' + esc(isItems ? shown : key) + '" placeholder="Type to search fields\u2026" autocomplete="off" spellcheck="false" onfocus="this.select()" aria-label="Field (type to search)">' + cap + '</div>';
 }
-function fieldDatalist(withItems) {
-  var h = '<datalist id="fieldlist">' + (withItems ? '<option value="Number of items"></option>' : '');
-  model.fields.forEach(function (f) { h += '<option value="' + esc(f.key) + '" label="' + f.filled.toLocaleString() + ' objects"></option>'; });
-  return h + '</datalist>';
-}
-function resolveField(txt) {
+function resolveField(txt, curKey) {
   var v = String(txt || '').trim(); if (!v) return '';
+  if (curKey && (E.shortName(curKey).toLowerCase() === v.toLowerCase() || (spec.labels && spec.labels[curKey] && String(spec.labels[curKey]).toLowerCase() === v.toLowerCase()))) return curKey;
   if (v.toLowerCase() === 'number of items') return E.ITEMS;
   if (model.fieldMap.has(v)) return v;
   var lc = v.toLowerCase(), keys = model.fields.map(function (f) { return f.key; });
@@ -1210,7 +1215,7 @@ appEl.addEventListener('click', function (e) { if (!inBuilder(e.target)) return;
 function swap(a, i, j) { if (j < 0 || j >= a.length) return; var x = a[i]; a[i] = a[j]; a[j] = x; }
 appEl.addEventListener('change', function (e) { if (!inBuilder(e.target)) return;
   var t = e.target, act = t.dataset.act; if (!act) { if (t.id === 'tplIn') importTemplate(t.files[0]); return; }
-  if (t.dataset.fp) { var rv = resolveField(t.value); if (rv === null) { setStatus('No single field matches "' + t.value + '". Type a few letters and pick one from the list.', true); refresh(); return; } t = { value: rv, dataset: t.dataset }; }
+  if (t.dataset.fp) { var rv = resolveField(t.value, t.dataset.key); if (rv === null) { setStatus('No single field matches "' + t.value + '". Type a few letters and pick one from the list.', true); refresh(); return; } t = { value: rv, dataset: t.dataset }; }
   var i = +t.dataset.i, f;
   switch (act) {
     case 'preset': setPreset(t.value); return;
