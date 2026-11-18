@@ -123,6 +123,16 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
 .fields .acts { display: flex; gap: 4px; flex-wrap: nowrap; }
 .fields td.ex { max-width: 26ch; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 
+#tplbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 10px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 8px; }
+#tplbar label { font-size: 12.5px; color: var(--muted); }
+#tplbar select { flex: 1 1 240px; width: auto; max-width: 420px; }
+#tplbar .tphint { flex: 1 1 100%; font-size: 12px; color: var(--muted); }
+#fpop { position: fixed; z-index: 60; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.2); overflow: auto; font-size: 13px; }
+#fpop .fo { padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+#fpop .fo.on, #fpop .fo:hover { background: var(--accent-soft); }
+#fpop .fn { font-weight: 500; word-break: break-word; }
+#fpop .fg { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+#fpop .fm { padding: 6px 10px; color: var(--muted); font-size: 12px; }
 .drop { position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--bg) 82%, transparent); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 600; border: 3px dashed var(--accent); color: var(--accent); }
 .loading { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 70%, transparent); font-weight: 500; }
 @media (prefers-reduced-motion: no-preference) { .btn { transition: border-color .12s; } }
@@ -130,7 +140,7 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
 
 <div class="app">
   <div class="top">
-    <div class="brand">IFC Report Builder <small>Reads Tekla Structures IFC files in your browser. Nothing is uploaded.</small></div>
+    <div class="brand">IFC Report Builder <small>Quantity reports from Tekla Structures models. IFC files are read in your browser and never uploaded.</small></div>
     <div class="filechip" id="connectChip" hidden></div>
     <div class="filechip" id="chip" hidden><b id="chipName"></b><span id="chipInfo"></span></div>
     <button class="btn primary" id="viewerBtn" type="button" hidden>Refresh from viewer</button>
@@ -161,6 +171,7 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
             <button class="btn primary needs-dl" type="button" data-exp="pdf" hidden>PDF</button>
           </div>
         </div>
+        <div class="tplbar" id="tplbar"></div>
         <div class="meta" id="meta"></div>
         <div class="status" id="status" role="status" aria-live="polite"></div>
         <div id="out"></div>
@@ -634,7 +645,7 @@ function unitName(kind, unit, system) {
 /* ---------- Reports ---------- */
 var ITEMS = '__items';
 function groupLabel(model, key, v, system, blank) {
-  if (v === undefined || v === null || v === '') return blank === undefined ? '(blank)' : blank;
+  if (v === undefined || v === null || v === '') return blank === undefined ? '(no ' + shortName(key).toLowerCase() + ')' : blank;
   var f = model.fieldMap.get(key);
   if (f && f.kind && typeof v === 'number') return fmtValue(v, f.kind, 'auto', system);
   return String(v);
@@ -646,6 +657,7 @@ function matches(row, flt) {
     case 'in': return flt.values.indexOf(has ? String(v) : '(blank)') > -1;
     case 'notin': return flt.values.indexOf(has ? String(v) : '(blank)') === -1;
     case 'contains': { if (!has) return false; var sv = String(v).toLowerCase(), words = String(flt.text || '').split(/[,;]/).map(function (w) { return w.trim().toLowerCase(); }).filter(Boolean); if (!words.length) return true; for (var wi = 0; wi < words.length; wi++) if (sv.indexOf(words[wi]) > -1) return true; return false; }
+    case 'notcontains': { if (!has) return true; var sv2 = String(v).toLowerCase(), w2 = String(flt.text || '').split(/[,;]/).map(function (w) { return w.trim().toLowerCase(); }).filter(Boolean); for (var wj = 0; wj < w2.length; wj++) if (sv2.indexOf(w2[wj]) > -1) return false; return true; }
     case 'filled': return has;
     case 'empty': return !has;
     case 'gt': return has && typeof v === 'number' && v > flt.num;
@@ -679,6 +691,7 @@ function runReport(model, spec, system) {
   var measures = spec.measures || [];
   if (spec.mode === 'list') {
     var cols = (spec.columns || []).filter(Boolean).map(function (k) { var f = model.fieldMap.get(k); return { label: k, key: k, kind: f ? f.kind : null, unit: 'auto', numeric: !!(f && f.numeric), group: true }; });
+    if (spec.listHideEmpty !== false && cols.length) rows = rows.filter(function (r) { return cols.some(function (c) { var v = r.v[c.key]; return v !== undefined && v !== null && v !== ''; }); });
     var out = rows.map(function (r) {
       return { type: 'row', raw: cols.map(function (c) { return r.v[c.key]; }), cells: cols.map(function (c) { var v = r.v[c.key]; return v === undefined ? '' : fmtValue(v, c.kind, 'auto', system); }) };
     });
@@ -713,7 +726,7 @@ function runReport(model, spec, system) {
     var uname = kind ? unitName(kind, m.unit, system) : '';
     return { label: m.label || (isItems ? 'Items' : (aggName(agg) + ' ' + shortName(m.field))), key: m.field, field: m.field, agg: agg, kind: kind, unit: m.unit || 'auto', unitName: uname, numeric: agg !== 'list', measure: true, _base: base };
   });
-  var blank = spec.blankEmpty ? '' : '(blank)';
+  var blank = spec.blankEmpty ? '' : undefined;
   var gcols = gb.map(function (k) { var f = model.fieldMap.get(k); return { label: (spec.labels && spec.labels[k]) || shortName(k), key: k, kind: f ? f.kind : null, numeric: false, group: true }; });
 
   var groups = new Map();
@@ -780,7 +793,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = api; else 
 var E = window.IfcEngine;
 var SAMPLES = { steel: { name: 'Sample 6.ifc (sample model)', b64: '' }, concrete: { name: 'Concrete Sample.ifc (sample model)', b64: '' } };
 var SEP = ' \u203A ';
-var HINTS = { ['Tekla Reinforcement - Bending List' + SEP + 'Group position number']: 'Rebar mark, such as 4R002', ['Tekla Reinforcement - Bending List' + SEP + 'Number of bars in group']: 'One IFC entry is a whole group of bars. Add this up for the bar count', ['Tekla Reinforcement - Bending List' + SEP + 'Length']: 'Length of one bar', ['Tekla Reinforcement - Bending List' + SEP + 'a']: 'Bend dimensions a to r match Tekla\'s Dim A to R in the bend schedule (h1 is H, k1 is K)', ['Tekla Reinforcement - Bending List' + SEP + 'Weight']: 'Weight of one bar', ['Rebar totals' + SEP + 'Total weight (all bars in group)']: 'Worked out here: weight of one bar times the bars in the group', ['Rebar totals' + SEP + 'Total length (all bars in group)']: 'Worked out here: length of one bar times the bars in the group', ['Tekla Assembly' + SEP + 'Cast unit rebar weight']: 'Rebar weight inside this cast unit', ['Tekla Quantity' + SEP + 'Volume']: 'Volume of the part, stored to 0.001 m³', ['Part Properties' + SEP + 'Part Mark']: 'Tekla part position, such as p104. Main parts carry the assembly mark', ['Part Properties' + SEP + 'Is Main Part?']: 'Written by Tekla: Yes for the main part of an assembly',  'Description': 'In Tekla exports this is the profile, such as W10X12 or PL3/8"X7"', 'Name': 'In Tekla exports this is the part type: BEAM, COLUMN, PLATE, NUT and so on', 'Assembly mark': 'Mark of the assembly the part belongs to (an assembly row shows its own mark)', 'Assembly name': 'Name of that assembly, such as BEAM or VERTICAL HSS BRACE', 'Material': 'Grade, from the material linked to the part', 'IFC class': 'The IFC entity type the part was exported as', 'Tag': 'Tekla stores the assembly mark here for assemblies and their main part. Other parts hold an internal Tekla ID, not a part mark', 'Part role': 'Main or secondary part. Uses Tekla\'s Is Main Part? when the file has it, otherwise worked out from the Tag', 'Bolt use': 'Worked out here: bolt entries with no nut or washer are probably holes (hardware switched off in Tekla)' };
+var HINTS = { ['Tekla Reinforcement - Bending List' + SEP + 'Group position number']: 'Rebar mark, such as 4R002', ['Tekla Reinforcement - Bending List' + SEP + 'Number of bars in group']: 'One IFC entry is a whole group of bars. Add this up for the bar count', ['Tekla Reinforcement - Bending List' + SEP + 'Length']: 'Length of one bar', ['Tekla Reinforcement - Bending List' + SEP + 'a']: 'Bend dimensions a to r match Tekla\'s Dim A to R in the bend schedule (h1 is H, k1 is K)', ['Tekla Reinforcement - Bending List' + SEP + 'Weight']: 'Weight of one bar', ['Rebar totals' + SEP + 'Total weight (all bars in group)']: 'Worked out here: weight of one bar times the bars in the group', ['Rebar totals' + SEP + 'Total length (all bars in group)']: 'Worked out here: length of one bar times the bars in the group', ['Tekla Assembly' + SEP + 'Cast unit rebar weight']: 'Rebar weight inside this cast unit', ['Tekla Quantity' + SEP + 'Volume']: 'Volume of the part, stored to 0.001 m³', ['Part Properties' + SEP + 'Part Mark']: 'Tekla part position, such as p104. Main parts carry the assembly mark', ['Part Properties' + SEP + 'Is Main Part?']: 'Written by Tekla: Yes for the main part of an assembly',  'Profile': 'In Tekla exports this is the profile, such as W10X12 or PL3/8"X7"', 'Name': 'In Tekla exports this is the part type: BEAM, COLUMN, PLATE, NUT and so on', 'Assembly mark': 'Mark of the assembly the part belongs to (an assembly row shows its own mark)', 'Assembly name': 'Name of that assembly, such as BEAM or VERTICAL HSS BRACE', 'Material': 'Grade, from the material linked to the part', 'IFC class': 'The IFC entity type the part was exported as', 'Tag': 'Tekla stores the assembly mark here for assemblies and their main part. Other parts hold an internal Tekla ID, not a part mark', 'Part role': 'Main or secondary part. Uses Tekla\'s Is Main Part? when the file has it, otherwise worked out from the Tag', 'Bolt use': 'Worked out here: bolt entries with no nut or washer are probably holes (hardware switched off in Tekla)' };
 function $(s, el) { return (el || document).querySelector(s); }
 function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -791,9 +804,9 @@ var distinctCache = new Map();
 
 /* ---------- Built-in templates ---------- */
 var W = 'Tekla Quantity' + SEP + 'Weight', L = 'Tekla Quantity' + SEP + 'Length';
-var STEEL = [{ field: 'Material', op: 'contains', text: 'STEEL' }, { field: 'Name', op: 'notin', values: ['NUT', 'WASHER'] }];
+var STEEL = [{ field: 'Profile', op: 'filled' }, { field: 'Material', op: 'notcontains', text: 'CONCRETE, GROUT' }, { field: 'Name', op: 'notin', values: ['NUT', 'WASHER'] }];
 var PRESETS = [
-  { id: 'steel-material', cat: 'Steel', name: 'Steel material list', spec: { title: 'Steel material list', mode: 'grouped', filters: STEEL, groupBy: ['Description', 'Material'],
+  { id: 'steel-material', cat: 'Steel', name: 'Steel material list', spec: { title: 'Steel material list', mode: 'grouped', filters: STEEL, groupBy: ['Profile', 'Material'],
     measures: [{ field: '__items', agg: 'items' }, { field: L, agg: 'sum' }, { field: W, agg: 'sum' }] } },
   { id: 'steel-by-type', cat: 'Steel', name: 'Steel weight by part type', spec: { title: 'Steel weight by part type', mode: 'grouped', filters: STEEL, groupBy: ['Name', 'Material'],
     measures: [{ field: '__items', agg: 'items' }, { field: W, agg: 'sum' }], sortMeasure: 1, sortDir: 'desc' } },
@@ -840,17 +853,17 @@ var PRESETS = [
     measures: [{ field: '__items', agg: 'items', label: 'Qty' }, { field: 'Tekla Assembly' + SEP + 'Assembly/Cast unit weight', agg: 'sum', label: 'Total weight' }, { field: 'Tekla Assembly' + SEP + 'Cast unit rebar weight', agg: 'sum', label: 'Rebar weight' }] } },
   { id: 'concrete', cat: 'Concrete and rebar', name: 'Concrete footings', spec: { title: 'Concrete footings', mode: 'grouped',
     filters: [{ field: 'IFC class', op: 'in', values: ['IfcFooting'] }],
-    groupBy: ['Description', 'Material'],
+    groupBy: ['Profile', 'Material'],
     measures: [{ field: '__items', agg: 'items' }, { field: 'Tekla Quantity' + SEP + 'Volume', agg: 'sum', label: 'Volume' }, { field: 'Tekla Quantity' + SEP + 'Weight', agg: 'sum', label: 'Weight' }] } },
   { id: 'by-class', cat: 'Any model', name: 'Everything by IFC class', spec: { title: 'Model contents by IFC class', mode: 'grouped', filters: [], groupBy: ['IFC class'],
     measures: [{ field: '__items', agg: 'items' }, { field: W, agg: 'sum' }] } },
   { id: 'part-list', cat: 'Steel', name: 'Steel part list (one row per part)', spec: { title: 'Steel part list', mode: 'list', filters: STEEL,
-    columns: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Part role', 'Name', 'Description', 'Material', L, W], sortBy: 'Assembly mark', sortDir: 'asc' } },
+    columns: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Part role', 'Name', 'Profile', 'Material', L, W], sortBy: 'Assembly mark', sortDir: 'asc' } },
   { id: 'bom', cat: 'Steel', name: 'Parts per assembly (BOM)', spec: { title: 'Assembly bill of materials', mode: 'grouped',
     filters: [{ field: 'Part Properties' + SEP + 'Part Mark', op: 'filled' }, { field: 'Name', op: 'notin', values: ['GROUT'] }],
-    groupBy: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Description'],
+    groupBy: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Profile'],
     measures: [{ field: '__items', agg: 'items', label: 'Qty' }, { field: 'Part Properties' + SEP + 'Length', agg: 'avg', label: 'Length' }, { field: W, agg: 'sum', label: 'Total weight' }] } },
-  { id: 'main-parts', cat: 'Steel', name: 'Main parts only (primary parts)', spec: { title: 'Main parts only', mode: 'grouped', filters: STEEL.concat([{ field: 'Part role', op: 'in', values: ['Primary (main part)'] }]), groupBy: ['Description', 'Material'],
+  { id: 'main-parts', cat: 'Steel', name: 'Main parts only (primary parts)', spec: { title: 'Main parts only', mode: 'grouped', filters: STEEL.concat([{ field: 'Part role', op: 'in', values: ['Primary (main part)'] }]), groupBy: ['Profile', 'Material'],
     measures: [{ field: '__items', agg: 'items' }, { field: L, agg: 'sum' }, { field: W, agg: 'sum' }] } }
 ];
 function blankSpec() { return { blankEmpty: false, labels: {}, title: 'Untitled report', mode: 'grouped', filters: [], groupBy: [], measures: [{ field: '__items', agg: 'items' }], columns: [], subtotals: true, grandTotal: true, sortMeasure: '', sortDir: 'desc', sortBy: '' }; }
@@ -884,9 +897,47 @@ function groupsOf(fields) {
   var names = Object.keys(g).sort(function (a, b) { return a === 'General' ? -1 : b === 'General' ? 1 : a.localeCompare(b); });
   return names.map(function (n) { return { name: n, fields: g[n].sort(function (a, b) { return E.shortName(a.key).localeCompare(E.shortName(b.key)); }) }; });
 }
+var fpop = document.createElement('div'); fpop.id = 'fpop'; fpop.hidden = true; document.body.appendChild(fpop);
+var fp = { input: null, items: [], idx: -1, closeT: 0 };
+function fpClose() { fpop.hidden = true; fp.input = null; fp.idx = -1; }
+function fpRender(q) {
+  var toks = q.toLowerCase().split(/\s+/).filter(Boolean), isM = fp.input && fp.input.dataset.act === 'm-field';
+  var list = model.fields.filter(function (f) { var k = f.key.toLowerCase(); return toks.every(function (t) { return k.indexOf(t) > -1; }); });
+  function rank(f) { var sn = E.shortName(f.key).toLowerCase(), qq = toks.join(' '); return !qq ? 3 : sn === qq ? 0 : sn.indexOf(qq) === 0 ? 1 : sn.indexOf(qq) > -1 ? 2 : 3; }
+  list.sort(function (a, b) { return rank(a) - rank(b) || (a.group === 'General' ? -1 : 0) - (b.group === 'General' ? -1 : 0) || a.key.localeCompare(b.key); });
+  var items = list.slice(0, 80).map(function (f) { return { v: f.key, n: E.shortName(f.key), g: f.group + ' \u00b7 ' + f.filled.toLocaleString() }; });
+  if (isM && (!toks.length || 'number of items'.indexOf(toks.join(' ')) > -1)) items.unshift({ v: E.ITEMS, n: 'Number of items', g: 'count' });
+  fp.items = items; fp.idx = items.length && toks.length ? 0 : -1;
+  var h = items.map(function (it, i) { return '<div class="fo' + (i === fp.idx ? ' on' : '') + '" data-i="' + i + '"><span class="fn">' + esc(it.n) + '</span><span class="fg">' + esc(it.g) + '</span></div>'; }).join('');
+  if (!items.length) h = '<div class="fm">No field matches. Try fewer letters.</div>';
+  else if (list.length > 80) h += '<div class="fm">' + (list.length - 80) + ' more. Keep typing to narrow the list.</div>';
+  fpop.innerHTML = h;
+}
+function fpPlace() {
+  var r = fp.input.getBoundingClientRect(), w = Math.min(Math.max(r.width, 320), window.innerWidth - 16), left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+  var below = window.innerHeight - r.bottom - 10, above = r.top - 10, up = below < 200 && above > below;
+  fpop.style.left = left + 'px'; fpop.style.width = w + 'px'; fpop.style.maxHeight = Math.max(120, Math.min(340, up ? above : below)) + 'px';
+  if (up) { fpop.style.top = 'auto'; fpop.style.bottom = (window.innerHeight - r.top + 2) + 'px'; } else { fpop.style.bottom = 'auto'; fpop.style.top = (r.bottom + 2) + 'px'; }
+}
+function fpOpen(input, q) { clearTimeout(fp.closeT); fp.input = input; fpRender(q || ''); fpop.hidden = false; fpPlace(); }
+function fpChoose(i) { var it = fp.items[i], inp = fp.input; if (!it || !inp) return; inp.value = it.v === E.ITEMS ? 'Number of items' : it.v; fpClose(); inp.dispatchEvent(new Event('change', { bubbles: true })); }
+function fpMark() { Array.prototype.forEach.call(fpop.querySelectorAll('.fo'), function (n, i) { n.classList.toggle('on', i === fp.idx); if (i === fp.idx) n.scrollIntoView({ block: 'nearest' }); }); }
+document.addEventListener('focusin', function (e) { if (e.target.classList && e.target.classList.contains('fpick')) fpOpen(e.target, ''); });
+document.addEventListener('input', function (e) { if (e.target.classList && e.target.classList.contains('fpick')) fpOpen(e.target, e.target.value); }, true);
+document.addEventListener('focusout', function (e) { if (e.target.classList && e.target.classList.contains('fpick')) { fp.closeT = setTimeout(fpClose, 150); } });
+document.addEventListener('keydown', function (e) {
+  if (fpop.hidden || !fp.input || e.target !== fp.input) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); fp.idx = Math.min(fp.items.length - 1, fp.idx + 1); fpMark(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); fp.idx = Math.max(0, fp.idx - 1); fpMark(); }
+  else if (e.key === 'Enter') { if (fp.idx > -1) { e.preventDefault(); fpChoose(fp.idx); } }
+  else if (e.key === 'Escape') { fpClose(); }
+});
+fpop.addEventListener('mousedown', function (e) { var n = e.target.closest('.fo'); if (n) { e.preventDefault(); fpChoose(+n.dataset.i); } });
+window.addEventListener('resize', function () { if (!fpop.hidden && fp.input) fpPlace(); });
+document.addEventListener('scroll', function (e) { if (!fpop.hidden && fp.input && e.target !== fpop && !fpop.contains(e.target)) fpPlace(); }, true);
 function fieldPicker(act, i, selected) {
   var shown = selected === E.ITEMS ? 'Number of items' : (selected || '');
-  return '<input type="text" class="fpick" list="fieldlist" data-fp="1" data-act="' + act + '" data-i="' + i + '" value="' + esc(shown) + '" placeholder="Type to search fields\u2026" autocomplete="off" spellcheck="false" onfocus="this.select()" aria-label="Field (type to search)">';
+  return '<input type="text" class="fpick" data-fp="1" data-act="' + act + '" data-i="' + i + '" value="' + esc(shown) + '" placeholder="Type to search fields\u2026" autocomplete="off" spellcheck="false" onfocus="this.select()" aria-label="Field (type to search)">';
 }
 function fieldDatalist(withItems) {
   var h = '<datalist id="fieldlist">' + (withItems ? '<option value="Number of items"></option>' : '');
@@ -925,14 +976,15 @@ function distinct(field) {
 function opsFor(f) {
   if (f && f.numeric && f.kind) return [['gt', 'is greater than'], ['lt', 'is less than'], ['filled', 'has a value'], ['empty', 'is blank']];
   if (f && f.numeric) return [['in', 'is one of'], ['notin', 'is not one of'], ['gt', 'is greater than'], ['lt', 'is less than'], ['filled', 'has a value'], ['empty', 'is blank']];
-  return [['in', 'is one of'], ['notin', 'is not one of'], ['contains', 'contains'], ['filled', 'has a value'], ['empty', 'is blank']];
+  return [['in', 'is one of'], ['notin', 'is not one of'], ['contains', 'contains'], ['notcontains', 'does not contain'], ['filled', 'has a value'], ['empty', 'is blank']];
 }
 function dispFactor(kind) { if (!kind) return 1; var u = E.resolveUnit(kind, 'auto', system); return E.UNITS[kind][u === 'ftin' ? 'ft' : u]; }
 function unitLabelFor(kind, unit) { var u = E.resolveUnit(kind, unit, system); return u ? E.UNIT_LABEL[u] : ''; }
 function csvUnitFor(kind, unit) { return E.unitName(kind, unit, system); }
 
 /* ---------- Builder rendering ---------- */
-var builderEl = $('#builder');
+var builderEl = $('#builder'), tplbarEl = $('#tplbar'), appEl = document.querySelector('.app');
+function inBuilder(t) { return builderEl.contains(t) || tplbarEl.contains(t); }
 function missingFields() {
   var miss = [];
   function chk(k) { if (k && k !== E.ITEMS && !fld(k) && miss.indexOf(k) < 0) miss.push(k); }
@@ -940,25 +992,28 @@ function missingFields() {
   return miss;
 }
 function renderBuilder() {
-  if (!model) { builderEl.innerHTML = '<div class="empty">Open an IFC file to start.</div>'; return; }
+  if (!model) { builderEl.innerHTML = '<div class="empty">Open an IFC file to start.</div>'; tplbarEl.innerHTML = ''; return; }
   var h = '';
-  /* template */
-  h += '<div class="sec"><h3>Template</h3><div class="tpl"><select id="preset" data-act="preset" aria-label="Report template">';
+  /* template bar (shown above the report) */
+  var tb = '<label for="preset">Template</label><select id="preset" data-act="preset" aria-label="Report template">';
   ['Steel', 'Concrete and rebar', 'Any model'].forEach(function (cat) {
-    h += '<optgroup label="' + cat + '">' + PRESETS.filter(function (p) { return p.cat === cat; }).map(function (p) { return '<option value="b:' + p.id + '"' + (presetId === 'b:' + p.id || presetId === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</optgroup>';
+    tb += '<optgroup label="' + cat + '">' + PRESETS.filter(function (p) { return p.cat === cat; }).map(function (p) { return '<option value="b:' + p.id + '"' + (presetId === 'b:' + p.id || presetId === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</optgroup>';
   });
-  if (saved.length) h += '<optgroup label="Saved in this browser">' + saved.map(function (p, i) { return '<option value="s:' + i + '"' + (presetId === 's:' + i ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</optgroup>';
-  if (presetId === 'custom') h += '<option value="custom" selected>Custom (unsaved changes)</option>';
-  h += '</select><div class="row wrap"><button class="btn small" type="button" data-act="tpl-save">Save as template</button>';
-  if (/^s:/.test(presetId)) h += '<button class="btn small ghost" type="button" data-act="tpl-del">Delete</button>';
-  h += '<button class="btn small ghost" type="button" data-act="tpl-export">Export</button><button class="btn small ghost" type="button" data-act="tpl-import">Import</button><input type="file" id="tplIn" accept=".json" hidden></div></div></div>';
+  if (saved.length) tb += '<optgroup label="Saved in this browser">' + saved.map(function (p, i) { return '<option value="s:' + i + '"' + (presetId === 's:' + i ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</optgroup>';
+  if (presetId === 'custom') tb += '<option value="custom" selected>Custom (unsaved changes)</option>';
+  tb += '</select><button class="btn small" type="button" data-act="tpl-save" title="Saves these settings under the report title above">Save as template</button>';
+  if (/^s:/.test(presetId)) tb += '<button class="btn small ghost" type="button" data-act="tpl-del">Delete</button>';
+  tb += '<button class="btn small ghost" type="button" data-act="tpl-export">Export</button><button class="btn small ghost" type="button" data-act="tpl-import">Import</button><input type="file" id="tplIn" accept=".json" hidden>' +
+    '<div class="tphint">To save your own version: change the settings on the left, type a name in the report title above, then press Save as template.</div>';
+  tplbarEl.innerHTML = tb;
 
   var miss = missingFields();
   if (miss.length) h += '<div class="sec"><div class="warnline">This template uses ' + miss.length + ' field' + (miss.length > 1 ? 's' : '') + ' that this model does not have. Rows marked below are ignored until you pick another field.</div></div>';
 
   /* mode */
-  h += '<div class="sec"><h3>Report type</h3><div class="seg" role="group"><button type="button" data-act="mode" data-v="grouped" aria-pressed="' + (spec.mode === 'grouped') + '">Grouped totals</button><button type="button" data-act="mode" data-v="list" aria-pressed="' + (spec.mode === 'list') + '">List of items</button></div></div>';
+  h += '<div class="sec"><h3>Report type</h3><div class="seg" role="group"><button type="button" data-act="mode" data-v="grouped" aria-pressed="' + (spec.mode === 'grouped') + '">Grouped totals</button><button type="button" data-act="mode" data-v="list" aria-pressed="' + (spec.mode === 'list') + '">One row per object</button></div></div>';
 
+  h += '<div class="sec" style="margin-top:-6px"><div class="note">' + (spec.mode === 'list' ? 'Every object gets its own line, with a total row for lengths and weights. Pick the columns below.' : 'Objects are combined into groups, with totals for each group.') + '</div></div>';
   /* filters */
   h += '<div class="sec"><h3>Include only <span class="hint">' + (spec.filters.length ? '' : 'everything') + '</span></h3>';
   spec.filters.forEach(function (f, i) {
@@ -966,7 +1021,7 @@ function renderBuilder() {
     h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row">' + fieldPicker('f-field', i, f.field) + '<button class="x" type="button" data-act="f-del" data-i="' + i + '" aria-label="Remove filter">✕</button></div>';
     if (bad) h += '<div class="warnline">Not in this model</div>';
     h += '<select data-act="f-op" data-i="' + i + '" aria-label="Condition">' + ops.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === f.op ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
-    if (f.op === 'contains') h += '<input type="text" data-act="f-text" data-i="' + i + '" value="' + esc(f.text || '') + '" placeholder="Text to look for, or several separated by commas (A36, A992)" aria-label="Text">';
+    if (f.op === 'contains' || f.op === 'notcontains') h += '<input type="text" data-act="f-text" data-i="' + i + '" value="' + esc(f.text || '') + '" placeholder="Text to look for, or several separated by commas (A36, A992)" aria-label="Text">';
     else if (f.op === 'gt' || f.op === 'lt') {
       var shown = f.num === undefined || f.num === null ? '' : +(f.num * dispFactor(fd && fd.kind)).toFixed(4);
       h += '<div class="row"><input type="number" step="any" data-act="f-num" data-i="' + i + '" value="' + shown + '" aria-label="Number">' + (fd && fd.kind ? '<span class="muted">' + esc(unitLabelFor(fd.kind, 'auto')) + '</span>' : '') + '</div>';
@@ -1025,7 +1080,7 @@ function renderBuilder() {
       '<div class="row"><span class="muted">Sections</span><select data-act="lbreak" aria-label="Break into sections by"><option value="">No sections</option>' + spec.columns.filter(Boolean).map(function (c) { return '<option value="' + esc(c) + '"' + (spec.listBreak === c ? ' selected' : '') + '>Subtotal by ' + esc(E.shortName(c)) + '</option>'; }).join('') + '</select></div>' +
       '<label class="chk"><input type="checkbox" data-act="ltotal"' + (spec.listTotal !== false ? ' checked' : '') + '> Total row for lengths, weights and other measured columns</label></div>';
   }
-  builderEl.innerHTML = h + fieldDatalist(true);
+  builderEl.innerHTML = h;
 }
 
 /* ---------- Report rendering ---------- */
@@ -1041,6 +1096,7 @@ function describeFilters() {
       case 'in': parts.push(n + ' is ' + (f.values || []).join(', ')); break;
       case 'notin': parts.push(n + ' is not ' + (f.values || []).join(', ')); break;
       case 'contains': parts.push(n + ' contains "' + (f.text || '') + '"'); break;
+      case 'notcontains': parts.push(n + ' does not contain "' + (f.text || '') + '"'); break;
       case 'filled': parts.push(n + ' has a value'); break;
       case 'empty': parts.push(n + ' is blank'); break;
       case 'gt': parts.push(n + ' > ' + +(f.num * dispFactor(fd && fd.kind)).toFixed(3)); break;
@@ -1128,11 +1184,11 @@ function setPreset(val) {
 }
 function setStatus(msg, err) { var el = $('#status'); el.textContent = msg || ''; el.className = 'status' + (err ? ' err' : ''); if (msg) { clearTimeout(setStatus.t); setStatus.t = setTimeout(function () { el.textContent = ''; }, 6000); } }
 
-builderEl.addEventListener('click', function (e) {
+appEl.addEventListener('click', function (e) { if (!inBuilder(e.target)) return;
   var t = e.target.closest('[data-act]'); if (!t || t.tagName === 'SELECT' || t.tagName === 'INPUT') return;
   var act = t.dataset.act, i = +t.dataset.i;
   switch (act) {
-    case 'mode': spec.mode = t.dataset.v; if (spec.mode === 'list' && !spec.columns.length) spec.columns = ['Name', 'Description', 'Material']; touched(); refresh(); break;
+    case 'mode': spec.mode = t.dataset.v; if (spec.mode === 'list' && !spec.columns.length) spec.columns = ['Name', 'Profile', 'Material', 'Tekla Quantity' + SEP + 'Length', 'Tekla Quantity' + SEP + 'Weight'].filter(function (k) { return model.fieldMap.has(k); }); touched(); refresh(); break;
     case 'f-add': spec.filters.push({ field: '', op: 'in', values: [] }); touched(); refresh(); break;
     case 'f-del': spec.filters.splice(i, 1); touched(); refresh(); break;
     case 'g-add': spec.groupBy.push(''); touched(); refresh(); break;
@@ -1152,7 +1208,7 @@ builderEl.addEventListener('click', function (e) {
   }
 });
 function swap(a, i, j) { if (j < 0 || j >= a.length) return; var x = a[i]; a[i] = a[j]; a[j] = x; }
-builderEl.addEventListener('change', function (e) {
+appEl.addEventListener('change', function (e) { if (!inBuilder(e.target)) return;
   var t = e.target, act = t.dataset.act; if (!act) { if (t.id === 'tplIn') importTemplate(t.files[0]); return; }
   if (t.dataset.fp) { var rv = resolveField(t.value); if (rv === null) { setStatus('No single field matches "' + t.value + '". Type a few letters and pick one from the list.', true); refresh(); return; } t = { value: rv, dataset: t.dataset }; }
   var i = +t.dataset.i, f;
@@ -1178,7 +1234,7 @@ builderEl.addEventListener('change', function (e) {
   }
   touched(); refresh();
 });
-builderEl.addEventListener('input', function (e) {
+appEl.addEventListener('input', function (e) { if (!inBuilder(e.target)) return;
   var t = e.target, act = t.dataset.act, i = +t.dataset.i;
   if (act === 'f-text') { spec.filters[i].text = t.value; }
   else if (act === 'f-num') { var fd = fld(spec.filters[i].field); var x = parseFloat(t.value); spec.filters[i].num = isNaN(x) ? null : x / dispFactor(fd && fd.kind); }
