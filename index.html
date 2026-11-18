@@ -74,7 +74,7 @@ button, input, select { font: inherit; color: inherit; }
 .row.wrap { flex-wrap: wrap; }
 .item { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--panel-2); min-width: 0; }
 .item.missing { border-color: var(--warn); }
-select, input[type="text"], input[type="search"], input[type="number"] { border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 5px 7px; min-width: 0; max-width: 100%; }
+select, input[type="text"], input[type="search"], input[type="number"], input.fpick { border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 5px 7px; min-width: 0; max-width: 100%; }
 select { flex: 1 1 auto; width: 100%; }
 input[type="text"], input[type="search"], input[type="number"] { flex: 1 1 auto; width: 100%; }
 .x { flex: 0 0 auto; border: 0; background: transparent; cursor: pointer; color: var(--muted); padding: 3px 6px; border-radius: 4px; font-size: 15px; line-height: 1; }
@@ -884,6 +884,25 @@ function groupsOf(fields) {
   var names = Object.keys(g).sort(function (a, b) { return a === 'General' ? -1 : b === 'General' ? 1 : a.localeCompare(b); });
   return names.map(function (n) { return { name: n, fields: g[n].sort(function (a, b) { return E.shortName(a.key).localeCompare(E.shortName(b.key)); }) }; });
 }
+function fieldPicker(act, i, selected) {
+  var shown = selected === E.ITEMS ? 'Number of items' : (selected || '');
+  return '<input type="text" class="fpick" list="fieldlist" data-fp="1" data-act="' + act + '" data-i="' + i + '" value="' + esc(shown) + '" placeholder="Type to search fields\u2026" autocomplete="off" spellcheck="false" onfocus="this.select()" aria-label="Field (type to search)">';
+}
+function fieldDatalist(withItems) {
+  var h = '<datalist id="fieldlist">' + (withItems ? '<option value="Number of items"></option>' : '');
+  model.fields.forEach(function (f) { h += '<option value="' + esc(f.key) + '" label="' + f.filled.toLocaleString() + ' objects"></option>'; });
+  return h + '</datalist>';
+}
+function resolveField(txt) {
+  var v = String(txt || '').trim(); if (!v) return '';
+  if (v.toLowerCase() === 'number of items') return E.ITEMS;
+  if (model.fieldMap.has(v)) return v;
+  var lc = v.toLowerCase(), keys = model.fields.map(function (f) { return f.key; });
+  var ex = keys.filter(function (k) { return k.toLowerCase() === lc || E.shortName(k).toLowerCase() === lc; });
+  if (ex.length === 1) return ex[0];
+  var sub = keys.filter(function (k) { return k.toLowerCase().indexOf(lc) > -1; });
+  return sub.length === 1 ? sub[0] : null;
+}
 function fieldOptions(selected, pred, extra) {
   var h = '<option value="">Choose a field…</option>';
   (extra || []).forEach(function (x) { h += '<option value="' + esc(x.value) + '"' + (x.value === selected ? ' selected' : '') + '>' + esc(x.label) + '</option>'; });
@@ -944,7 +963,7 @@ function renderBuilder() {
   h += '<div class="sec"><h3>Include only <span class="hint">' + (spec.filters.length ? '' : 'everything') + '</span></h3>';
   spec.filters.forEach(function (f, i) {
     var fd = fld(f.field), ops = opsFor(fd), bad = f.field && !fd;
-    h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row"><select data-act="f-field" data-i="' + i + '" aria-label="Filter field">' + fieldOptions(f.field) + '</select><button class="x" type="button" data-act="f-del" data-i="' + i + '" aria-label="Remove filter">✕</button></div>';
+    h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row">' + fieldPicker('f-field', i, f.field) + '<button class="x" type="button" data-act="f-del" data-i="' + i + '" aria-label="Remove filter">✕</button></div>';
     if (bad) h += '<div class="warnline">Not in this model</div>';
     h += '<select data-act="f-op" data-i="' + i + '" aria-label="Condition">' + ops.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === f.op ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
     if (f.op === 'contains') h += '<input type="text" data-act="f-text" data-i="' + i + '" value="' + esc(f.text || '') + '" placeholder="Text to look for, or several separated by commas (A36, A992)" aria-label="Text">';
@@ -967,7 +986,7 @@ function renderBuilder() {
     h += '<div class="sec"><h3>Group rows by <span class="hint">in this order</span></h3>';
     spec.groupBy.forEach(function (g, i) {
       var bad = g && !fld(g);
-      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row"><select data-act="g-field" data-i="' + i + '" aria-label="Group field">' + fieldOptions(g) + '</select>' +
+      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row">' + fieldPicker('g-field', i, g) + '' +
         '<button class="x" type="button" data-act="g-up" data-i="' + i + '" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>↑</button><button class="x" type="button" data-act="g-down" data-i="' + i + '" aria-label="Move down"' + (i === spec.groupBy.length - 1 ? ' disabled' : '') + '>↓</button><button class="x" type="button" data-act="g-del" data-i="' + i + '" aria-label="Remove group">✕</button></div>' + (bad ? '<div class="warnline">Not in this model</div>' : '') + '</div>';
     });
     h += '<button class="btn small" type="button" data-act="g-add">+ Add grouping</button></div>';
@@ -975,7 +994,7 @@ function renderBuilder() {
     h += '<div class="sec"><h3>Columns to total</h3>';
     spec.measures.forEach(function (m, i) {
       var f = fld(m.field), isItems = m.field === E.ITEMS, bad = m.field && !isItems && !f;
-      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row"><select data-act="m-field" data-i="' + i + '" aria-label="Measure field">' + fieldOptions(m.field, null, [{ value: E.ITEMS, label: 'Number of items' }]) + '</select><button class="x" type="button" data-act="m-del" data-i="' + i + '" aria-label="Remove column">✕</button></div>';
+      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row">' + fieldPicker('m-field', i, m.field) + '<button class="x" type="button" data-act="m-del" data-i="' + i + '" aria-label="Remove column">✕</button></div>';
       if (bad) h += '<div class="warnline">Not in this model</div>';
       if (!isItems) {
         h += '<div class="row"><select data-act="m-agg" data-i="' + i + '" aria-label="How to combine">' + (f && !f.numeric ? [['list', 'List the values'], ['count', 'Count filled']] : [['sum', 'Add up'], ['avg', 'Average'], ['min', 'Smallest'], ['max', 'Largest'], ['count', 'Count filled']]).map(function (a) { return '<option value="' + a[0] + '"' + (a[0] === (m.agg || (f && !f.numeric ? 'list' : 'sum')) ? ' selected' : '') + '>' + a[1] + '</option>'; }).join('') + '</select>';
@@ -998,7 +1017,7 @@ function renderBuilder() {
     h += '<div class="sec"><h3>Columns</h3>';
     spec.columns.forEach(function (c, i) {
       var bad = c && !fld(c);
-      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row"><select data-act="c-field" data-i="' + i + '" aria-label="Column field">' + fieldOptions(c) + '</select>' +
+      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row">' + fieldPicker('c-field', i, c) + '' +
         '<button class="x" type="button" data-act="c-up" data-i="' + i + '" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>↑</button><button class="x" type="button" data-act="c-down" data-i="' + i + '" aria-label="Move down"' + (i === spec.columns.length - 1 ? ' disabled' : '') + '>↓</button><button class="x" type="button" data-act="c-del" data-i="' + i + '" aria-label="Remove column">✕</button></div>' + (bad ? '<div class="warnline">Not in this model</div>' : '') + '</div>';
     });
     h += '<button class="btn small" type="button" data-act="c-add">+ Add column</button></div>';
@@ -1006,7 +1025,7 @@ function renderBuilder() {
       '<div class="row"><span class="muted">Sections</span><select data-act="lbreak" aria-label="Break into sections by"><option value="">No sections</option>' + spec.columns.filter(Boolean).map(function (c) { return '<option value="' + esc(c) + '"' + (spec.listBreak === c ? ' selected' : '') + '>Subtotal by ' + esc(E.shortName(c)) + '</option>'; }).join('') + '</select></div>' +
       '<label class="chk"><input type="checkbox" data-act="ltotal"' + (spec.listTotal !== false ? ' checked' : '') + '> Total row for lengths, weights and other measured columns</label></div>';
   }
-  builderEl.innerHTML = h;
+  builderEl.innerHTML = h + fieldDatalist(true);
 }
 
 /* ---------- Report rendering ---------- */
@@ -1135,6 +1154,7 @@ builderEl.addEventListener('click', function (e) {
 function swap(a, i, j) { if (j < 0 || j >= a.length) return; var x = a[i]; a[i] = a[j]; a[j] = x; }
 builderEl.addEventListener('change', function (e) {
   var t = e.target, act = t.dataset.act; if (!act) { if (t.id === 'tplIn') importTemplate(t.files[0]); return; }
+  if (t.dataset.fp) { var rv = resolveField(t.value); if (rv === null) { setStatus('No single field matches "' + t.value + '". Type a few letters and pick one from the list.', true); refresh(); return; } t = { value: rv, dataset: t.dataset }; }
   var i = +t.dataset.i, f;
   switch (act) {
     case 'preset': setPreset(t.value); return;
