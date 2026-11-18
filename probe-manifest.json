@@ -1,0 +1,10 @@
+{
+  "url": "https://YOUR-NAME.github.io/ifc-report-builder/probe.html",
+  "title": "Viewer Probe",
+  "icon": "https://YOUR-NAME.github.io/ifc-report-builder/icon.png",
+  "description": "Test: shows what model data the 3D viewer gives to an extension.",
+  "extensionType": [
+    "3dviewer"
+  ],
+  "enabled": true
+}
