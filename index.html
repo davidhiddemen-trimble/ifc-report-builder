@@ -133,7 +133,7 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
     <div class="brand">IFC Report Builder <small>Reads Tekla Structures IFC files in your browser. Nothing is uploaded.</small></div>
     <div class="filechip" id="connectChip" hidden></div>
     <div class="filechip" id="chip" hidden><b id="chipName"></b><span id="chipInfo"></span></div>
-    <button class="btn primary" id="viewerBtn" type="button" hidden>Read model from viewer</button>
+    <button class="btn primary" id="viewerBtn" type="button" hidden>Refresh from viewer</button>
     <button class="btn" id="openBtn" type="button">Open IFC file</button>
     <input type="file" id="fileIn" accept=".ifc,.IFC" hidden>
     <div class="seg" role="group" aria-label="Units">
@@ -326,6 +326,7 @@ function loadIfc(text, fileName) {
     c = parseArgs(text.slice(e.s, e.e)); cache.set(id, c); return c;
   }
   var uf = readUnits(ents, text);
+  var isTekla = /Tekla/i.test(text.slice(0, 4000));
 
   /* relationships */
   var psetsOf = new Map(), matOf = new Map(), parentOf = new Map(), typeOf = new Map(), containerOf = new Map();
@@ -455,6 +456,8 @@ function loadIfc(text, fileName) {
       if (tmp[RB + 'Length'] && tmp[RB + 'Length'].kind === 'length') setVal(row, 'Rebar totals \u203A Total length (all bars in group)', { val: tmp[RB + 'Length'].val * nb, kind: 'length' });
       if (tmp[RB + 'Weight'] && tmp[RB + 'Weight'].kind === 'mass') setVal(row, 'Rebar totals \u203A Total weight (all bars in group)', { val: tmp[RB + 'Weight'].val * nb, kind: 'mass' });
     }
+    var prof = tmp['Part Properties \u203A Profile'] || tmp['Tekla Structures Common \u203A PROFILE'] || (isTekla && a[3] && /^IFC(BEAM|COLUMN|PLATE|MEMBER|FOOTING|PILE)$/.test(e.type) ? { val: a[3], text: true } : null);
+    if (prof) setVal(row, 'Profile', prof);
     row.parent = parentOf.get(id) || null;
     rows.push(row); byId.set(id, row);
   });
@@ -552,7 +555,7 @@ function loadViewer(objs, label, modelNames) {
     Object.keys(tmp).forEach(function (k) { setVal(row, k, tmp[k]); });
     var pp = function (n) { return tmp['Part Properties › ' + n]; };
     if (!row.v['Name']) { var nm = pp('Name') || tmp['Tekla Reinforcement - General › Name']; if (nm) setVal(row, 'Name', nm); }
-    if (pp('Profile')) setVal(row, 'Description', pp('Profile'));
+    if (pp('Profile')) { setVal(row, 'Description', pp('Profile')); setVal(row, 'Profile', pp('Profile')); }
     if (pp('Material')) setVal(row, 'Material', pp('Material'));
     if (pp('Part Mark')) { setVal(row, 'Tag', pp('Part Mark')); row.tag = pp('Part Mark').val; }
     if (modelNames && o.modelId && modelNames[o.modelId]) setVal(row, 'Model', { val: modelNames[o.modelId], text: true });
@@ -649,16 +652,17 @@ function matches(row, flt) {
     default: return true;
   }
 }
-function newAcc() { return { n: 0, cnt: 0, sum: 0, min: Infinity, max: -Infinity }; }
-function addAcc(a, x) { a.n++; if (x !== undefined && x !== null && typeof x === 'number') { a.cnt++; a.sum += x; if (x < a.min) a.min = x; if (x > a.max) a.max = x; } }
-function mergeAcc(a, b) { a.n += b.n; a.cnt += b.cnt; a.sum += b.sum; if (b.min < a.min) a.min = b.min; if (b.max > a.max) a.max = b.max; }
+function newAcc() { return { n: 0, cnt: 0, filled: 0, vals: null, sum: 0, min: Infinity, max: -Infinity }; }
+function addAcc(a, x) { a.n++; if (x !== undefined && x !== null && x !== '') { a.filled++; if (typeof x !== 'number') { if (!a.vals) a.vals = new Set(); a.vals.add(String(x)); } } if (x !== undefined && x !== null && typeof x === 'number') { a.cnt++; a.sum += x; if (x < a.min) a.min = x; if (x > a.max) a.max = x; } }
+function mergeAcc(a, b) { a.n += b.n; a.cnt += b.cnt; a.filled += b.filled; if (b.vals) { if (!a.vals) a.vals = new Set(); b.vals.forEach(function (v) { a.vals.add(v); }); } a.sum += b.sum; if (b.min < a.min) a.min = b.min; if (b.max > a.max) a.max = b.max; }
 function accValue(a, agg) {
   switch (agg) {
     case 'sum': return a.cnt ? a.sum : 0;
     case 'avg': return a.cnt ? a.sum / a.cnt : null;
     case 'min': return a.cnt ? a.min : null;
     case 'max': return a.cnt ? a.max : null;
-    case 'count': return a.cnt;
+    case 'count': return a.filled;
+    case 'list': { if (!a.vals) return ''; var arr = Array.from(a.vals).sort(function (x, y) { return x.localeCompare(y, undefined, { numeric: true, sensitivity: 'base' }); }); return arr.length > 6 ? arr.slice(0, 6).join(', ') + ' (+' + (arr.length - 6) + ' more)' : arr.join(', '); }
     default: return a.n;
   }
 }
@@ -688,7 +692,7 @@ function runReport(model, spec, system) {
     var kind = (!isItems && f && f.kind && agg !== 'count') ? f.kind : null;
     var base = isItems ? 'Items' : (m.label || (aggName(agg) + ' ' + shortName(m.field)));
     var uname = kind ? unitName(kind, m.unit, system) : '';
-    return { label: m.label || (isItems ? 'Items' : (aggName(agg) + ' ' + shortName(m.field))), key: m.field, field: m.field, agg: agg, kind: kind, unit: m.unit || 'auto', unitName: uname, numeric: true, measure: true, _base: base };
+    return { label: m.label || (isItems ? 'Items' : (aggName(agg) + ' ' + shortName(m.field))), key: m.field, field: m.field, agg: agg, kind: kind, unit: m.unit || 'auto', unitName: uname, numeric: agg !== 'list', measure: true, _base: base };
   });
   var blank = spec.blankEmpty ? '' : '(blank)';
   var gcols = gb.map(function (k) { var f = model.fieldMap.get(k); return { label: (spec.labels && spec.labels[k]) || shortName(k), key: k, kind: f ? f.kind : null, numeric: false, group: true }; });
@@ -708,13 +712,14 @@ function runReport(model, spec, system) {
   });
   if (spec.sortMeasure !== undefined && spec.sortMeasure !== null && spec.sortMeasure !== '' && mcols[spec.sortMeasure]) {
     var mi = +spec.sortMeasure, dir = spec.sortDir === 'asc' ? 1 : -1;
-    glist.sort(function (a, b) { return dir * ((accValue(a.accs[mi], mcols[mi].agg) || 0) - (accValue(b.accs[mi], mcols[mi].agg) || 0)); });
+    glist.sort(function (a, b) { var x = accValue(a.accs[mi], mcols[mi].agg), y = accValue(b.accs[mi], mcols[mi].agg); return dir * ((typeof x === 'number' ? x : 0) - (typeof y === 'number' ? y : 0)); });
   }
   function mkCells(accs, labels, type, firstLabel) {
     var raw = accs.map(function (a, i) { return accValue(a, mcols[i].agg); });
     var cells = raw.map(function (v, i) {
       if (v === null) return '';
       var m = mcols[i];
+      if (m.agg === 'list') return String(v);
       if (!m.kind) return fmtNum(v, Number.isInteger(v) ? 0 : 2);
       return fmtValue(v, m.kind, m.unit, system);
     });
@@ -735,7 +740,7 @@ function runReport(model, spec, system) {
   if (spec.grandTotal !== false && glist.length && gb.length > 0) outRows.push(mkCells(grand, [ 'Grand total' ].concat(gb.slice(1).map(function () { return ''; })), 'total'));
   return { columns: gcols.concat(mcols), groupCount: gb.length, rows: outRows, itemCount: rows.length };
 }
-function aggName(a) { return { sum: 'Total', avg: 'Average', min: 'Min', max: 'Max', count: 'Count of' }[a] || a; }
+function aggName(a) { return { sum: 'Total', avg: 'Average', min: 'Min', max: 'Max', count: 'Count of', list: 'Values of' }[a] || a; }
 function shortName(k) { var i = k.indexOf(' › '); return i > -1 ? k.slice(i + 3) : k; }
 function cmp(a, b, la, lb) {
   if (typeof a === 'number' && typeof b === 'number') return a - b;
@@ -937,10 +942,10 @@ function renderBuilder() {
     h += '<div class="sec"><h3>Columns to total</h3>';
     spec.measures.forEach(function (m, i) {
       var f = fld(m.field), isItems = m.field === E.ITEMS, bad = m.field && !isItems && !f;
-      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row"><select data-act="m-field" data-i="' + i + '" aria-label="Measure field">' + fieldOptions(m.field, function (x) { return x.numeric; }, [{ value: E.ITEMS, label: 'Number of items' }]) + '</select><button class="x" type="button" data-act="m-del" data-i="' + i + '" aria-label="Remove column">✕</button></div>';
+      h += '<div class="item' + (bad ? ' missing' : '') + '"><div class="row"><select data-act="m-field" data-i="' + i + '" aria-label="Measure field">' + fieldOptions(m.field, null, [{ value: E.ITEMS, label: 'Number of items' }]) + '</select><button class="x" type="button" data-act="m-del" data-i="' + i + '" aria-label="Remove column">✕</button></div>';
       if (bad) h += '<div class="warnline">Not in this model</div>';
       if (!isItems) {
-        h += '<div class="row"><select data-act="m-agg" data-i="' + i + '" aria-label="How to combine">' + [['sum', 'Add up'], ['avg', 'Average'], ['min', 'Smallest'], ['max', 'Largest'], ['count', 'Count filled']].map(function (a) { return '<option value="' + a[0] + '"' + (a[0] === (m.agg || 'sum') ? ' selected' : '') + '>' + a[1] + '</option>'; }).join('') + '</select>';
+        h += '<div class="row"><select data-act="m-agg" data-i="' + i + '" aria-label="How to combine">' + (f && !f.numeric ? [['list', 'List the values'], ['count', 'Count filled']] : [['sum', 'Add up'], ['avg', 'Average'], ['min', 'Smallest'], ['max', 'Largest'], ['count', 'Count filled']]).map(function (a) { return '<option value="' + a[0] + '"' + (a[0] === (m.agg || (f && !f.numeric ? 'list' : 'sum')) ? ' selected' : '') + '>' + a[1] + '</option>'; }).join('') + '</select>';
         if (f && f.kind && m.agg !== 'count') {
           h += '<select data-act="m-unit" data-i="' + i + '" aria-label="Unit"><option value="auto"' + (!m.unit || m.unit === 'auto' ? ' selected' : '') + '>Unit: ' + esc(unitLabelFor(f.kind, 'auto')) + '</option>' + Object.keys(E.UNITS[f.kind]).map(function (u) { return '<option value="' + u + '"' + (m.unit === u ? ' selected' : '') + '>' + esc(E.UNIT_LABEL[u]) + '</option>'; }).join('') + '</select>';
         }
@@ -1102,7 +1107,7 @@ builderEl.addEventListener('change', function (e) {
     case 'f-op': spec.filters[i].op = t.value; touched(); refresh(); return;
     case 'f-val': f = spec.filters[i]; f.values = f.values || []; var ix = f.values.indexOf(t.value); if (t.checked && ix < 0) f.values.push(t.value); if (!t.checked && ix > -1) f.values.splice(ix, 1); t.closest('details').querySelector('summary').textContent = f.values.length + ' of ' + distinct(f.field).length + ' selected'; touched(); markCustom(); refreshPreviewOnly(); return;
     case 'g-field': spec.groupBy[i] = t.value; break;
-    case 'm-field': var mm = spec.measures[i]; mm.field = t.value; if (t.value === E.ITEMS) mm.agg = 'items'; else if (mm.agg === 'items') mm.agg = 'sum'; mm.unit = 'auto'; break;
+    case 'm-field': var mm = spec.measures[i]; mm.field = t.value; var nf = model.fieldMap.get(t.value); if (t.value === E.ITEMS) mm.agg = 'items'; else if (nf && !nf.numeric) mm.agg = 'list'; else if (mm.agg === 'items' || mm.agg === 'list') mm.agg = 'sum'; mm.unit = 'auto'; break;
     case 'm-agg': spec.measures[i].agg = t.value; break;
     case 'm-unit': spec.measures[i].unit = t.value; break;
     case 'c-field': spec.columns[i] = t.value; break;
@@ -1195,7 +1200,7 @@ function adopt(m, sample) {
   else if (!/tekla/i.test(m.exporter || '')) h += '<div class="banner warn"><b>This file was not exported by Tekla Structures.</b> Fields will differ, so the built-in templates may need other fields. Use the Data fields tab to see what is available.</div>';
   if (m.duplicates) h += '<div class="banner warn"><b>' + m.duplicates.toLocaleString() + ' duplicate objects were ignored.</b> The same object (same GlobalId) appears more than once in this file, which would double count it. Only the first copy is used. If your Tekla totals look different, check the IFC export settings.</div>';
   $('#banner').innerHTML = h;
-  var keep = spec && presetId === 'custom';
+  var keep = spec && (presetId === 'custom' || adopt.keepSpec);
   if (!keep) { var pid = defaultPreset(m, sample); var pr = PRESETS.filter(function (x) { return x.id === pid; })[0]; spec = fitSpec(fullSpec(pr.spec)); presetId = 'b:' + pid; }
   refresh();
 }
@@ -1339,14 +1344,15 @@ function initDownloads() {
 spec = fullSpec(PRESETS[0].spec); presetId = 'b:' + PRESETS[0].id;
 initDownloads();
 /* ---------- Trimble Connect link (only when embedded as an extension) ---------- */
-function loadFromViewer() {
-  var api = window.tcApi; if (!api || !api.viewer) return;
-  showLoading(true, 'Reading the model from Trimble Connect\u2026');
+function loadFromViewer(silent) {
+  var api = window.tcApi; if (!api || !api.viewer || loadFromViewer.busy) return;
+  loadFromViewer.busy = true;
+  if (silent !== true) showLoading(true, 'Reading the model from Trimble Connect\u2026');
   var names = {};
-  var pm = api.viewer.getModels ? api.viewer.getModels().then(function (ms) { (ms || []).forEach(function (m) { names[m.id] = m.name; }); }, function () { }) : Promise.resolve();
-  pm.then(function () { return api.viewer.getObjects({ output: { loadProperties: true } }); }).then(function (res) {
+  var pm = api.viewer.getModels ? api.viewer.getModels('loaded').then(function (ms) { (ms || []).forEach(function (m) { names[m.id] = m.name; }); }, function () { }) : Promise.resolve();
+  pm.then(function () { return api.viewer.getObjects({ output: { loadProperties: true } }, { visible: true }); }).then(function (res) {
     var objs = []; (res || []).forEach(function (m) { (m.objects || []).forEach(function (o) { o.modelId = m.modelId; objs.push(o); }); });
-    if (!objs.length) throw new Error('No model is loaded in the 3D viewer. Turn a model on in the viewer, then press the button again.');
+    if (!objs.length) throw new Error('No visible objects in the 3D viewer. Show a model, then press Refresh.');
     if (!(objs[0].properties && objs[0].properties.length)) {
       var p = Promise.resolve([]);
       (res || []).forEach(function (m) { var ids = (m.objects || []).map(function (x) { return x.id; });
@@ -1355,14 +1361,15 @@ function loadFromViewer() {
     }
     return objs;
   }).then(function (objs) {
-    var ids = Object.keys(names), label = ids.length === 1 ? names[ids[0]] : (ids.length ? ids.length + ' models in viewer' : 'Model in Trimble Connect');
+    var present = {}; objs.forEach(function (o) { present[o.modelId] = 1; });
+    var ids = Object.keys(names).filter(function (k) { return present[k]; }), label = ids.length === 1 ? names[ids[0]] : (ids.length ? ids.length + ' visible models' : 'Visible model');
     var m = E.loadViewer(objs, label, names);
     if (!m.rows.length) throw new Error('The viewer returned no usable objects.');
-    adopt(m, false);
+    adopt.keepSpec = !!loadFromViewer.once; adopt(m, false); loadFromViewer.once = true;
     if (m.rows.some(function (r) { return r.cls === 'IFCBUILDINGELEMENTPROXY' && r.v['Pours \u203A Pour Volume'] !== undefined; }))
       $('#banner').innerHTML += '<div class="banner"><b>Concrete is listed by pour.</b> This model was uploaded with pours, not cast units, so concrete volumes follow the pours. Rebar is still grouped by cast unit.</div>';
     setStatus('Read ' + m.rows.length.toLocaleString() + ' objects from the viewer.');
-  }).catch(function (e) { setStatus('Could not read the viewer: ' + (e && e.message || e), true); }).then(function () { showLoading(false); });
+  }).catch(function (e) { setStatus('Could not read the viewer: ' + (e && e.message || e), true); }).then(function () { loadFromViewer.busy = false; showLoading(false); });
 }
 function initConnect() {
   var inFrame = false; try { inFrame = window.parent !== window; } catch (e) { inFrame = true; }
@@ -1371,7 +1378,7 @@ function initConnect() {
   sc.src = 'https://cdn.jsdelivr.net/npm/trimble-connect-workspace-api@0.3.34/dist/iife/trimbleconnect.workspace.api.js';
   sc.onload = function () {
     if (!window.TrimbleConnectWorkspace) return;
-    window.TrimbleConnectWorkspace.connect(window.parent, function (ev, data) { }, 15000).then(function (api) {
+    window.TrimbleConnectWorkspace.connect(window.parent, function (ev) { if (ev === 'viewer.onModelStateChanged' || ev === 'viewer.onModelReset' || ev === 'viewer.onPresentationChanged') { clearTimeout(initConnect.t); initConnect.t = setTimeout(function () { loadFromViewer(true); }, 1200); } }, 15000).then(function (api) {
       window.tcApi = api;
       if (api.viewer && api.viewer.getObjects) { $('#viewerBtn').hidden = false; $('#viewerBtn').onclick = loadFromViewer; setTimeout(loadFromViewer, 300); }
       return api.project.getProject().then(function (p) {
