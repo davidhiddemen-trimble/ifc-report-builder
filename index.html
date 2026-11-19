@@ -108,6 +108,13 @@ table.rep th { position: sticky; top: 0; z-index: 1; background: var(--panel-2);
 table.rep th small { font-weight: 400; color: var(--muted); }
 table.rep td { padding: 6px 12px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
 table.rep td.n, table.rep th.n { text-align: right; font-variant-numeric: tabular-nums; }
+table.rep tr.gb td { border-top: 2px solid var(--muted); }
+table.rep td.dim { color: var(--muted); opacity: .55; }
+table.rep tr.clk { cursor: pointer; }
+table.rep tr.picked td { background: var(--accent-soft); }
+table.rep tr.picked td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.selbar { font-size: 12.5px; color: var(--muted); margin: 0 0 8px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.selbar label { display: inline-flex; gap: 6px; align-items: center; }
 table.rep tr.sub td { background: var(--sub); font-weight: 500; }
 table.rep tr.total td { background: var(--total); font-weight: 600; border-top: 1px solid var(--line); border-bottom: 0; }
 table.rep tbody tr:hover td { background: var(--accent-soft); }
@@ -175,6 +182,7 @@ table.rep td.g { max-width: 44ch; overflow: hidden; text-overflow: ellipsis; }
         </div>
         <div class="tplbar" id="tplbar"></div>
         <div class="meta" id="meta"></div>
+        <div class="selbar" id="selbar" hidden>Click a row to select its objects in the 3D view. <label class="chk"><input type="checkbox" id="zoomSel" checked> Zoom to them</label></div>
         <div class="status" id="status" role="status" aria-live="polite"></div>
         <div id="out"></div>
       </div>
@@ -558,7 +566,7 @@ function loadViewer(objs, label, modelNames) {
   (objs || []).forEach(function (o) {
     var cls = String(o.class || 'UNKNOWN').toUpperCase();
     if (SKIP.test(cls)) return;
-    var row = { id: nextId++, v: {}, cls: cls, tag: null, parent: null };
+    var row = { id: nextId++, v: {}, cls: cls, tag: null, parent: null, vid: o.id, mid: o.modelId };
     setVal(row, 'IFC class', { val: prettyClass(cls), text: true });
     if (o.product && o.product.name) setVal(row, 'Name', { val: o.product.name, text: true });
     var tmp = {};
@@ -695,18 +703,19 @@ function runReport(model, spec, system) {
     var cols = (spec.columns || []).filter(Boolean).map(function (k) { var f = model.fieldMap.get(k); return { label: k, key: k, kind: f ? f.kind : null, unit: 'auto', numeric: !!(f && f.numeric), group: true }; });
     if (spec.listHideEmpty !== false && cols.length) rows = rows.filter(function (r) { return cols.some(function (c) { var v = r.v[c.key]; return v !== undefined && v !== null && v !== ''; }); });
     var out = rows.map(function (r) {
-      return { type: 'row', raw: cols.map(function (c) { return r.v[c.key]; }), cells: cols.map(function (c) { var v = r.v[c.key]; return v === undefined ? '' : fmtValue(v, c.kind, 'auto', system); }) };
+      return { type: 'row', members: [r], raw: cols.map(function (c) { return r.v[c.key]; }), cells: cols.map(function (c) { var v = r.v[c.key]; return v === undefined ? '' : fmtValue(v, c.kind, 'auto', system); }) };
     });
     var si = spec.sortBy ? cols.findIndex(function (c) { return c.key === spec.sortBy; }) : -1;
     var bi = spec.listBreak ? cols.findIndex(function (c) { return c.key === spec.listBreak; }) : -1;
     if (si > -1 || bi > -1) out.sort(function (a, b) { var d = 0; if (bi > -1) d = cmp(a.raw[bi], b.raw[bi]); if (!d && si > -1) d = cmp(a.raw[si], b.raw[si]) * (spec.sortDir === 'desc' ? -1 : 1); return d; });
+    if (bi > -1) out.forEach(function (o, k) { if (k > 0 && String(o.raw[bi]) !== String(out[k - 1].raw[bi])) o.breakBefore = true; });
     var sumCols = cols.map(function (c, i) { return c.numeric && c.kind ? i : -1; }).filter(function (i) { return i > -1; });
     var labelCol = cols.findIndex(function (c) { return !(c.numeric && c.kind); });
     function sumRow(group, type, label) {
       var raw = cols.map(function () { return ''; }), cells = cols.map(function () { return ''; });
       sumCols.forEach(function (i) { var t = 0; group.forEach(function (r) { if (typeof r.raw[i] === 'number') t += r.raw[i]; }); raw[i] = t; cells[i] = fmtValue(t, cols[i].kind, 'auto', system); });
       var lc = labelCol > -1 ? labelCol : 0; raw[lc] = label; cells[lc] = label;
-      return { type: type, raw: raw, cells: cells };
+      return { type: type, raw: raw, cells: cells, members: group.reduce(function (a, r) { return a.concat(r.members || []); }, []) };
     }
     if (sumCols.length && (bi > -1 || spec.listTotal !== false)) {
       var withSums = [], cur = [], curKey = null;
@@ -736,7 +745,8 @@ function runReport(model, spec, system) {
     var raws = gb.map(function (k) { return r.v[k]; });
     var keyStr = gb.map(function (k, i) { return groupLabel(model, k, raws[i], system, blank); }).join('\u0001');
     var g = groups.get(keyStr);
-    if (!g) { g = { raws: raws, labels: gb.map(function (k, i) { return groupLabel(model, k, raws[i], system, blank); }), accs: mcols.map(newAcc) }; groups.set(keyStr, g); }
+    if (!g) { g = { raws: raws, labels: gb.map(function (k, i) { return groupLabel(model, k, raws[i], system, blank); }), accs: mcols.map(newAcc), members: [] }; groups.set(keyStr, g); }
+    g.members.push(r);
     mcols.forEach(function (m, i) { addAcc(g.accs[i], m.agg === 'items' ? 1 : r.v[m.field]); });
   });
   var glist = Array.from(groups.values());
@@ -762,16 +772,21 @@ function runReport(model, spec, system) {
   var outRows = [], grand = mcols.map(newAcc), sub = null, subKey = null, subN = 0;
   var doSub = spec.subtotals !== false && gb.length > 1;
   var firstCount = {}; glist.forEach(function (g) { firstCount[g.labels[0]] = (firstCount[g.labels[0]] || 0) + 1; });
-  function flushSub() { if (sub && subN > 1) { outRows.push(mkCells(sub.accs, [ 'Total: ' + subKey ].concat(gb.slice(1).map(function () { return ''; })), 'subtotal')); } sub = null; subN = 0; }
+  function flushSub() { if (sub && subN > 1) { var sr = mkCells(sub.accs, [ 'Total: ' + subKey ].concat(gb.slice(1).map(function () { return ''; })), 'subtotal'); sr.members = sub.members; outRows.push(sr); } sub = null; subN = 0; }
+  var prevFirst = null;
   glist.forEach(function (g) {
     if (doSub && subKey !== null && g.labels[0] !== subKey) flushSub();
-    if (doSub && (sub === null)) { sub = { accs: mcols.map(newAcc) }; subKey = g.labels[0]; }
+    if (doSub && (sub === null)) { sub = { accs: mcols.map(newAcc), members: [] }; subKey = g.labels[0]; }
     subN++;
-    outRows.push(mkCells(g.accs, g.labels, 'row'));
+    var orow = mkCells(g.accs, g.labels, 'row'); orow.members = g.members;
+    if (gb.length > 1 && prevFirst !== null && g.labels[0] !== prevFirst) orow.breakBefore = true;
+    prevFirst = g.labels[0];
+    outRows.push(orow);
+    if (sub) sub.members = sub.members.concat(g.members);
     g.accs.forEach(function (a, i) { mergeAcc(grand[i], a); if (sub) mergeAcc(sub.accs[i], a); });
   });
   flushSub();
-  if (spec.grandTotal !== false && glist.length && gb.length > 0) outRows.push(mkCells(grand, [ 'Grand total' ].concat(gb.slice(1).map(function () { return ''; })), 'total'));
+  if (spec.grandTotal !== false && glist.length && gb.length > 0) { var tr = mkCells(grand, [ 'Grand total' ].concat(gb.slice(1).map(function () { return ''; })), 'total'); tr.members = rows; outRows.push(tr); }
   return { columns: gcols.concat(mcols), groupCount: gb.length, rows: outRows, itemCount: rows.length };
 }
 function aggName(a) { return { sum: 'Total', avg: 'Average', min: 'Min', max: 'Max', count: 'Count of', list: 'Values of' }[a] || a; }
@@ -861,6 +876,8 @@ var PRESETS = [
     measures: [{ field: '__items', agg: 'items' }, { field: W, agg: 'sum' }] } },
   { id: 'part-list', cat: 'Steel', name: 'Steel part list (one row per part)', spec: { title: 'Steel part list', mode: 'list', filters: STEEL,
     columns: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Part role', 'Name', 'Profile', 'Material', L, W], sortBy: 'Assembly mark', sortDir: 'asc' } },
+  { id: 'asm-breakdown', cat: 'Steel', name: 'Assembly breakdown (main part, then sub-parts)', spec: { title: 'Assembly breakdown', mode: 'list', filters: [{ field: 'Part role', op: 'filled' }, { field: 'Name', op: 'notin', values: ['NUT', 'WASHER'] }],
+    columns: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Part role', 'Name', 'Profile', 'Material', L, W], listBreak: 'Assembly mark', sortBy: 'Part role', sortDir: 'asc' } },
   { id: 'bom', cat: 'Steel', name: 'Parts per assembly (BOM)', spec: { title: 'Assembly bill of materials', mode: 'grouped',
     filters: [{ field: 'Part Properties' + SEP + 'Part Mark', op: 'filled' }, { field: 'Name', op: 'notin', values: ['GROUT'] }],
     groupBy: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Profile'],
@@ -1129,15 +1146,17 @@ function renderReport() {
   h += '<div class="tablewrap"><table class="rep"><thead><tr>';
   res.columns.forEach(function (c) { var hd = colHeader(c); h += '<th class="' + (c.measure ? 'n' : (c.numeric && c.group ? 'n' : '')) + '">' + esc(hd.text) + (hd.unit ? ' <small>(' + esc(hd.unit) + ')</small>' : '') + '</th>'; });
   h += '</tr></thead><tbody>';
-  var cap = 1500, shown = 0;
-  res.rows.forEach(function (r) {
+  var cap = 1500, shown = 0, sel = canSelect(), prevFirst = null;
+  $('#selbar').hidden = !sel;
+  res.rows.forEach(function (r, ri) {
     if (shown >= cap && r.type === 'row') return;
     shown++;
-    h += '<tr class="' + (r.type === 'subtotal' ? 'sub' : r.type === 'total' ? 'total' : '') + '">';
+    h += '<tr' + (sel && r.members && r.members.length ? ' data-r="' + ri + '"' : '') + ' class="' + (r.type === 'subtotal' ? 'sub' : r.type === 'total' ? 'total' : '') + (r.breakBefore ? ' gb' : '') + (sel ? ' clk' : '') + '">';
     if (res.list) r.cells.forEach(function (c, i) { h += '<td class="g' + (res.columns[i].numeric && res.columns[i].kind ? ' n' : '') + '" title="' + esc(c) + '">' + esc(c) + '</td>'; });
     else {
       var gc = res.groupCount;
-      for (var i = 0; i < gc; i++) h += '<td class="g" title="' + esc(r.labels[i] || '') + '">' + esc(r.labels[i] || '') + '</td>';
+      for (var i = 0; i < gc; i++) h += '<td class="g' + (i === 0 && r.type === 'row' && gc > 1 && prevFirst === r.labels[0] ? ' dim' : '') + '" title="' + esc(r.labels[i] || '') + '">' + esc(r.labels[i] || '') + '</td>';
+      if (r.type === 'row') prevFirst = r.labels[0]; else prevFirst = null;
       if (gc === 0) { /* no groups */ }
       r.cells.forEach(function (c) { h += '<td class="n">' + esc(c) + '</td>'; });
     }
@@ -1149,6 +1168,18 @@ function renderReport() {
   if (spec.measures.some(function (m) { return /BaseQuantities/.test(m.field || '') && /Volume/.test(m.field || ''); })) h += '<div class="note">These volumes come from the generic IFC quantities, which Tekla rounds to 0.1 m³ per item. The Tekla Quantity volume field is more precise.</div>';
   $('#out').innerHTML = h;
 }
+function canSelect() { return !!(window.tcApi && window.tcApi.viewer && window.tcApi.viewer.setSelection && model && model.schema === 'Trimble Connect viewer'); }
+function selectRow(idx, tr) {
+  var r = lastResult && lastResult.rows[idx]; if (!r || !r.members || !r.members.length || !canSelect()) return;
+  var by = {}; r.members.forEach(function (m) { if (m.vid === undefined) return; (by[m.mid] = by[m.mid] || []).push(m.vid); });
+  var ids = Object.keys(by).map(function (k) { return { modelId: k, objectRuntimeIds: by[k] }; }), n = r.members.length;
+  Array.prototype.forEach.call(document.querySelectorAll('#out tr.picked'), function (x) { x.classList.remove('picked'); }); if (tr) tr.classList.add('picked');
+  var v = window.tcApi.viewer;
+  v.setSelection({ modelObjectIds: ids }, 'set').then(function () { if ($('#zoomSel').checked && v.setCamera) return v.setCamera({ modelObjectIds: ids }); })
+    .then(function () { setStatus('Selected ' + n.toLocaleString() + ' object' + (n === 1 ? '' : 's') + ' in the 3D view.'); })
+    .catch(function (e) { setStatus('Could not select in the 3D view: ' + (e && e.message || e), true); });
+}
+$('#out').addEventListener('click', function (e) { var tr = e.target.closest && e.target.closest('tr[data-r]'); if (tr) selectRow(+tr.dataset.r, tr); });
 function renderFields() {
   if (!model) { $('#fieldsPane').innerHTML = ''; return; }
   var q = ($('#fq') && $('#fq').value || '').toLowerCase();
@@ -1363,10 +1394,10 @@ function tableRows(res, forCsv) {
   var out = [];
   res.rows.forEach(function (r) {
     if (forCsv && r.type === 'subtotal') return;
-    if (res.list) out.push({ type: r.type, cells: r.cells.slice(), raw: r.raw });
+    if (res.list) out.push({ type: r.type, cells: r.cells.slice(), raw: r.raw, breakBefore: r.breakBefore });
     else {
       var cells = r.labels.slice(0, res.groupCount).concat(r.cells);
-      out.push({ type: r.type, cells: cells, raw: r.labels.slice(0, res.groupCount).concat(r.raw) });
+      out.push({ type: r.type, cells: cells, raw: r.labels.slice(0, res.groupCount).concat(r.raw), breakBefore: r.breakBefore });
     }
   });
   return out;
@@ -1425,6 +1456,9 @@ function buildPdf() {
       if (d.section !== 'body') return; var t = rows[d.row.index].type;
       if (t === 'subtotal') { d.cell.styles.fillColor = [232, 239, 247]; d.cell.styles.fontStyle = 'bold'; }
       if (t === 'total') { d.cell.styles.fillColor = [205, 221, 240]; d.cell.styles.fontStyle = 'bold'; }
+    },
+    didDrawCell: function (d) {
+      if (d.section === 'body' && rows[d.row.index].breakBefore) { doc.setDrawColor(90, 104, 119); doc.setLineWidth(1.2); doc.line(d.cell.x, d.cell.y, d.cell.x + d.cell.width, d.cell.y); }
     }
   });
   var n = doc.getNumberOfPages(), ph = doc.internal.pageSize.getHeight();
