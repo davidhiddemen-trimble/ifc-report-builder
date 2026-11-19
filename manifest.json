@@ -1,7 +1,0 @@
-{
-  "url": "https://davidhiddemen-trimble.github.io/ifc-report-builder/index.html",
-  "title": "Report Builder",
-  "icon": "https://davidhiddemen-trimble.github.io/ifc-report-builder/icon.png",
-  "description": "Build custom quantity reports from IFC models and export CSV, text or PDF.",
-  "enabled": true
-}
