@@ -695,8 +695,54 @@ function filterRows(model, spec) {
   return model.rows.filter(function (r) { for (var i = 0; i < flts.length; i++) if (!matches(r, flts[i])) return false; return true; });
 }
 
+
+/* ---------- Assembly list: each assembly with its quantity, then its parts ---------- */
+function asmDefaults(model) {
+  var SEPC = ' › ';
+  var mark = model.fieldMap.has('Part Properties' + SEPC + 'Part Mark') ? 'Part Properties' + SEPC + 'Part Mark' : 'Tag';
+  return { assembly: 'Assembly mark', mark: mark, weight: 'Tekla Quantity' + SEPC + 'Weight', length: 'Tekla Quantity' + SEPC + 'Length' };
+}
+function natCmp(a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }); }
+function runAssembly(model, spec, system) {
+  var d = asmDefaults(model), f = {}; var sa = spec.asm || {};
+  Object.keys(d).forEach(function (k) { f[k] = sa[k] || d[k]; });
+  var rows = filterRows(model, spec).filter(function (r) { var m = r.v[f.mark]; return r.cls !== 'IFCELEMENTASSEMBLY' && m !== undefined && m !== null && m !== ''; }), wt = model.fieldMap.get(f.weight), ln = model.fieldMap.get(f.length);
+  var cols = [
+    { label: 'Mark', key: 'Mark', numeric: false, group: true }, { label: 'Qty', key: 'Qty', numeric: true, right: true, group: true },
+    { label: 'Name', key: 'Name', numeric: false, group: true }, { label: 'Profile', key: 'Profile', numeric: false, group: true }, { label: 'Material', key: 'Material', numeric: false, group: true },
+    { label: 'Length', key: 'Length', numeric: true, kind: ln ? ln.kind || 'length' : 'length', unit: 'auto', group: true },
+    { label: 'Unit weight', key: 'Unit weight', numeric: true, kind: wt ? wt.kind || 'mass' : 'mass', unit: 'auto', group: true },
+    { label: 'Ext. weight', key: 'Ext. weight', numeric: true, kind: wt ? wt.kind || 'mass' : 'mass', unit: 'auto', group: true }];
+  var asms = new Map();
+  rows.forEach(function (r) { var a = r.v[f.assembly]; if (a === undefined || a === null || a === '') return; a = String(a); if (!asms.has(a)) asms.set(a, []); asms.get(a).push(r); });
+  var out = [], grandW = 0, grandQ = 0, all = [];
+  var asmObjects = new Map(); model.rows.forEach(function (r) { if (r.cls === 'IFCELEMENTASSEMBLY' && r.v[f.assembly] !== undefined) { var k = String(r.v[f.assembly]); asmObjects.set(k, (asmObjects.get(k) || 0) + 1); } });
+  function num(v) { return typeof v === 'number' ? v : 0; }
+  function cell(i, raw) { var c = cols[i]; if (raw === undefined || raw === null || raw === '') return ''; return c.kind ? fmtValue(raw, c.kind, 'auto', system) : String(raw); }
+  function line(type, vals, members, brk) { var raw = vals.slice(); return { type: type, raw: raw, cells: raw.map(function (v, i) { return cell(i, v); }), members: members, breakBefore: !!brk }; }
+  Array.from(asms.keys()).sort(natCmp).forEach(function (key, ai) {
+    var prs = asms.get(key), isMain = function (r) { return /^Primary/.test(String(r.v['Part role'] || '')) || (r.v['Part role'] === undefined && String(r.v[f.mark]) === key); };
+    var mains = prs.filter(isMain), main = mains[0] || prs[0];
+    var qty = mains.length || asmObjects.get(key) || 1;
+    var groups = new Map();
+    prs.forEach(function (r) {
+      var k = [r.v[f.mark], r.v['Profile'] || r.v['Name'], Math.round(num(r.v[f.length]) * 1e6), r.v['Name']].join('\u0001');
+      var g = groups.get(k); if (!g) { g = { r: r, n: 0, w: 0, main: isMain(r), members: [] }; groups.set(k, g); }
+      g.n++; g.w += num(r.v[f.weight]); g.members.push(r); if (isMain(r)) g.main = true;
+    });
+    var gl = Array.from(groups.values()).sort(function (a, b) { return (b.main ? 1 : 0) - (a.main ? 1 : 0) || natCmp(a.r.v[f.mark] || '', b.r.v[f.mark] || ''); });
+    var ext = gl.reduce(function (t, g) { return t + g.w; }, 0);
+    out.push(line('asm', [key, qty, main.v['Name'] || '', main.v['Profile'] || '', main.v['Material'] || '', main.v[f.length], ext / qty, ext], prs, ai > 0));
+    gl.forEach(function (g) { var r = g.r; out.push(line('row', ['  ' + (r.v[f.mark] === undefined ? '' : r.v[f.mark]), g.n, r.v['Name'] || '', r.v['Profile'] || '', r.v['Material'] || '', r.v[f.length], g.w / g.n, g.w], g.members, false)); });
+    grandW += ext; grandQ += qty; all = all.concat(prs);
+  });
+  if (out.length && spec.grandTotal !== false) { var tr = line('total', ['Grand total', grandQ, '', '', '', '', '', grandW], all, true); out.push(tr); }
+  return { columns: cols, rows: out, itemCount: rows.length, list: true, asm: true };
+}
+
 /* Returns {columns:[{label,kind,unit,numeric}], rows:[{type:'row'|'subtotal'|'total', cells:[display], raw:[...]}], itemCount} */
 function runReport(model, spec, system) {
+  if (spec.mode === 'assembly') return runAssembly(model, spec, system);
   var rows = filterRows(model, spec);
   var measures = spec.measures || [];
   if (spec.mode === 'list') {
@@ -798,7 +844,7 @@ function cmp(a, b, la, lb) {
   return String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' });
 }
 
-var api = { loadIfc: loadIfc, loadViewer: loadViewer, runReport: runReport, filterRows: filterRows, fmtValue: fmtValue, numValue: numValue, unitName: unitName, resolveUnit: resolveUnit,
+var api = { asmDefaults: asmDefaults, loadIfc: loadIfc, loadViewer: loadViewer, runReport: runReport, filterRows: filterRows, fmtValue: fmtValue, numValue: numValue, unitName: unitName, resolveUnit: resolveUnit,
   UNITS: UNITS, UNIT_LABEL: UNIT_LABEL, ITEMS: ITEMS, shortName: shortName, aggName: aggName, parseArgs: parseArgs, scan: scan, fmtFtIn: fmtFtIn, groupLabel: groupLabel };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.IfcEngine = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -876,8 +922,7 @@ var PRESETS = [
     measures: [{ field: '__items', agg: 'items' }, { field: W, agg: 'sum' }] } },
   { id: 'part-list', cat: 'Steel', name: 'Steel part list (one row per part)', spec: { title: 'Steel part list', mode: 'list', filters: STEEL,
     columns: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Part role', 'Name', 'Profile', 'Material', L, W], sortBy: 'Assembly mark', sortDir: 'asc' } },
-  { id: 'asm-breakdown', cat: 'Steel', name: 'Assembly breakdown (main part, then sub-parts)', spec: { title: 'Assembly breakdown', mode: 'list', filters: [{ field: 'Part role', op: 'filled' }, { field: 'Name', op: 'notin', values: ['NUT', 'WASHER'] }],
-    columns: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Part role', 'Name', 'Profile', 'Material', L, W], listBreak: 'Assembly mark', sortBy: 'Part role', sortDir: 'asc' } },
+  { id: 'asm-list', cat: 'Steel', name: 'Assembly list (assemblies with their parts)', spec: { title: 'Assembly list', mode: 'assembly', filters: [{ field: 'Assembly mark', op: 'filled' }, { field: 'Material', op: 'notcontains', text: 'GROUT' }], asm: {} } },
   { id: 'bom', cat: 'Steel', name: 'Parts per assembly (BOM)', spec: { title: 'Assembly bill of materials', mode: 'grouped',
     filters: [{ field: 'Part Properties' + SEP + 'Part Mark', op: 'filled' }, { field: 'Name', op: 'notin', values: ['GROUT'] }],
     groupBy: ['Assembly mark', 'Part Properties' + SEP + 'Part Mark', 'Profile'],
@@ -1033,9 +1078,9 @@ function renderBuilder() {
   if (miss.length) h += '<div class="sec"><div class="warnline">This template uses ' + miss.length + ' field' + (miss.length > 1 ? 's' : '') + ' that this model does not have. Rows marked below are ignored until you pick another field.</div></div>';
 
   /* mode */
-  h += '<div class="sec"><h3>Report type</h3><div class="seg" role="group"><button type="button" data-act="mode" data-v="grouped" aria-pressed="' + (spec.mode === 'grouped') + '">Grouped totals</button><button type="button" data-act="mode" data-v="list" aria-pressed="' + (spec.mode === 'list') + '">One row per object</button></div></div>';
+  h += '<div class="sec"><h3>Report type</h3><div class="seg" role="group"><button type="button" data-act="mode" data-v="grouped" aria-pressed="' + (spec.mode === 'grouped') + '">Grouped totals</button><button type="button" data-act="mode" data-v="list" aria-pressed="' + (spec.mode === 'list') + '">One row per object</button><button type="button" data-act="mode" data-v="assembly" aria-pressed="' + (spec.mode === 'assembly') + '">Assembly list</button></div></div>';
 
-  h += '<div class="sec" style="margin-top:-6px"><div class="note">' + (spec.mode === 'list' ? 'Every object gets its own line, with a total row for lengths and weights. Pick the columns below.' : 'Objects are combined into groups, with totals for each group.') + '</div></div>';
+  h += '<div class="sec" style="margin-top:-6px"><div class="note">' + (spec.mode === 'assembly' ? 'Each assembly shows how many there are and its total weight, followed by its parts counted across all of them (3 beams, then 12 clips).' : spec.mode === 'list' ? 'Every object gets its own line, with a total row for lengths and weights. Pick the columns below.' : 'Objects are combined into groups, with totals for each group.') + '</div></div>';
   /* filters */
   h += '<div class="sec"><h3>Include only <span class="hint">' + (spec.filters.length ? '' : 'everything') + '</span></h3>';
   spec.filters.forEach(function (f, i) {
@@ -1058,7 +1103,14 @@ function renderBuilder() {
   });
   h += '<button class="btn small" type="button" data-act="f-add">+ Add filter</button></div>';
 
-  if (spec.mode === 'grouped') {
+  if (spec.mode === 'assembly') {
+    var ad = E.asmDefaults(model), sa = spec.asm || {};
+    h += '<div class="sec"><h3>Fields used</h3>';
+    [['as-asm', 'assembly', 'Assembly mark'], ['as-mark', 'mark', 'Part mark'], ['as-wt', 'weight', 'Weight'], ['as-len', 'length', 'Length']].forEach(function (x) {
+      h += '<div class="row" style="align-items:flex-start"><span class="muted" style="min-width:76px;padding-top:7px">' + x[2] + '</span>' + fieldPicker(x[0], 0, sa[x[1]] || ad[x[1]]) + '</div>';
+    });
+    h += '<div class="note">Use "Include only" above to leave things out, such as grout.</div><label class="chk"><input type="checkbox" data-act="opt-total"' + (spec.grandTotal !== false ? ' checked' : '') + '> Grand total row</label></div>';
+  } else if (spec.mode === 'grouped') {
     /* group by */
     h += '<div class="sec"><h3>Group rows by <span class="hint">in this order</span></h3>';
     spec.groupBy.forEach(function (g, i) {
@@ -1151,8 +1203,8 @@ function renderReport() {
   res.rows.forEach(function (r, ri) {
     if (shown >= cap && r.type === 'row') return;
     shown++;
-    h += '<tr' + (sel && r.members && r.members.length ? ' data-r="' + ri + '"' : '') + ' class="' + (r.type === 'subtotal' ? 'sub' : r.type === 'total' ? 'total' : '') + (r.breakBefore ? ' gb' : '') + (sel ? ' clk' : '') + '">';
-    if (res.list) r.cells.forEach(function (c, i) { h += '<td class="g' + (res.columns[i].numeric && res.columns[i].kind ? ' n' : '') + '" title="' + esc(c) + '">' + esc(c) + '</td>'; });
+    h += '<tr' + (sel && r.members && r.members.length ? ' data-r="' + ri + '"' : '') + ' class="' + (r.type === 'subtotal' || r.type === 'asm' ? 'sub' : r.type === 'total' ? 'total' : '') + (r.breakBefore ? ' gb' : '') + (sel ? ' clk' : '') + '">';
+    if (res.list) r.cells.forEach(function (c, i) { h += '<td' + (res.asm && r.type === 'row' && i === 0 ? ' style="padding-left:30px"' : '') + ' class="g' + (res.columns[i].numeric && (res.columns[i].kind || res.columns[i].right) ? ' n' : '') + '" title="' + esc(c) + '">' + esc(c) + '</td>'; });
     else {
       var gc = res.groupCount;
       for (var i = 0; i < gc; i++) h += '<td class="g' + (i === 0 && r.type === 'row' && gc > 1 && prevFirst === r.labels[0] ? ' dim' : '') + '" title="' + esc(r.labels[i] || '') + '">' + esc(r.labels[i] || '') + '</td>';
@@ -1224,7 +1276,7 @@ appEl.addEventListener('click', function (e) { if (!inBuilder(e.target)) return;
   var t = e.target.closest('[data-act]'); if (!t || t.tagName === 'SELECT' || t.tagName === 'INPUT') return;
   var act = t.dataset.act, i = +t.dataset.i;
   switch (act) {
-    case 'mode': spec.mode = t.dataset.v; if (spec.mode === 'list' && !spec.columns.length) spec.columns = ['Name', 'Profile', 'Material', 'Tekla Quantity' + SEP + 'Length', 'Tekla Quantity' + SEP + 'Weight'].filter(function (k) { return model.fieldMap.has(k); }); touched(); refresh(); break;
+    case 'mode': spec.mode = t.dataset.v; if (spec.mode === 'assembly' && !spec.asm) spec.asm = {}; if (spec.mode === 'list' && !spec.columns.length) spec.columns = ['Name', 'Profile', 'Material', 'Tekla Quantity' + SEP + 'Length', 'Tekla Quantity' + SEP + 'Weight'].filter(function (k) { return model.fieldMap.has(k); }); touched(); refresh(); break;
     case 'f-add': spec.filters.push({ field: '', op: 'in', values: [] }); touched(); refresh(); break;
     case 'f-del': spec.filters.splice(i, 1); touched(); refresh(); break;
     case 'g-add': spec.groupBy.push(''); touched(); refresh(); break;
@@ -1258,6 +1310,7 @@ appEl.addEventListener('change', function (e) { if (!inBuilder(e.target)) return
     case 'm-agg': spec.measures[i].agg = t.value; break;
     case 'm-unit': spec.measures[i].unit = t.value; break;
     case 'c-field': spec.columns[i] = t.value; break;
+    case 'as-asm': case 'as-mark': case 'as-wt': case 'as-len': spec.asm = spec.asm || {}; spec.asm[{ 'as-asm': 'assembly', 'as-mark': 'mark', 'as-wt': 'weight', 'as-len': 'length' }[act]] = t.value; break;
     case 'opt-sub': spec.subtotals = t.checked; break;
     case 'opt-total': spec.grandTotal = t.checked; break;
     case 'opt-blank': spec.blankEmpty = t.checked; break;
@@ -1421,7 +1474,7 @@ function buildTxt() {
   var res = lastResult, hdr = headers(res), rows = tableRows(res, false);
   var gc = res.list ? 0 : res.groupCount;
   var wd = hdr.map(function (h, i) { var w = h.length; rows.forEach(function (r) { w = Math.max(w, String(r.cells[i] || '').length); }); return w; });
-  function pad(s, i) { s = String(s === undefined || s === null ? '' : s); var right = res.list ? (res.columns[i].kind && res.columns[i].numeric) : i >= gc; return right ? s.padStart(wd[i]) : s.padEnd(wd[i]); }
+  function pad(s, i) { s = String(s === undefined || s === null ? '' : s); var right = res.list ? (res.columns[i].numeric && (res.columns[i].kind || res.columns[i].right)) : i >= gc; return right ? s.padStart(wd[i]) : s.padEnd(wd[i]); }
   var line = hdr.map(function (h, i) { return '-'.repeat(wd[i]); }).join('  ');
   var out = [plain(spec.title || ''), plain(metaLine())]; var fl = describeFilters(); if (fl) out.push('Filter: ' + plain(fl)); out.push('');
   out.push(hdr.map(pad).join('  ')); out.push(line);
@@ -1446,7 +1499,7 @@ function buildPdf() {
   var y = 62, fl = describeFilters();
   if (fl) { var wrapped = doc.splitTextToSize('Filter: ' + plain(fl), pw - 2 * m); doc.text(wrapped, m, y + 13); y += 13 * wrapped.length; }
   var gc = res.list ? 0 : res.groupCount;
-  var colStyles = {}; res.columns.forEach(function (c, i) { if (res.list ? (c.kind && c.numeric) : i >= gc) colStyles[i] = { halign: 'right' }; });
+  var colStyles = {}; res.columns.forEach(function (c, i) { if (res.list ? (c.numeric && (c.kind || c.right)) : i >= gc) colStyles[i] = { halign: 'right' }; });
   doc.autoTable({
     head: [hdr], body: rows.map(function (r) { return r.cells.map(plain); }), startY: y + 14, margin: { left: m, right: m, bottom: 40 },
     styles: { fontSize: 8.5, cellPadding: 3.5, textColor: 30, lineColor: [220, 226, 232], lineWidth: 0.4 },
@@ -1454,7 +1507,7 @@ function buildPdf() {
     columnStyles: colStyles,
     didParseCell: function (d) {
       if (d.section !== 'body') return; var t = rows[d.row.index].type;
-      if (t === 'subtotal') { d.cell.styles.fillColor = [232, 239, 247]; d.cell.styles.fontStyle = 'bold'; }
+      if (t === 'subtotal' || t === 'asm') { d.cell.styles.fillColor = [232, 239, 247]; d.cell.styles.fontStyle = 'bold'; }
       if (t === 'total') { d.cell.styles.fillColor = [205, 221, 240]; d.cell.styles.fontStyle = 'bold'; }
     },
     didDrawCell: function (d) {
